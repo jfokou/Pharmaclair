@@ -1,0 +1,1 @@
+# PharmaClair - Bibliothèque standard uniquement (zero pip dependency)

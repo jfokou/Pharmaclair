@@ -1,1 +1,1 @@
-web: python -u pharmaclair.py
+web: python -u main.py
