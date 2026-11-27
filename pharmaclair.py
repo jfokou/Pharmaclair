@@ -2129,9 +2129,41 @@ def make_handler(c):
     return H
 
 if __name__ == "__main__":
+    import sys
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     db_file = os.environ.get("DB", "pharmaclair.db")
     conn = connect(db_file)
     seed_demo_data(conn)
-    port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 PharmaClair lancé sur http://0.0.0.0:{port}")
-    ThreadingHTTPServer(("0.0.0.0", port), make_handler(conn)).serve_forever()
+    
+    primary_port = int(os.environ.get("PORT", 8000))
+    handler = make_handler(conn)
+    
+    ports_to_try = [primary_port]
+    for p in (8000, 8080):
+        if p not in ports_to_try:
+            ports_to_try.append(p)
+            
+    active_servers = []
+    for p in ports_to_try:
+        try:
+            srv = ThreadingHTTPServer(("0.0.0.0", p), handler)
+            print(f"🚀 PharmaClair à l'écoute sur http://0.0.0.0:{p}", flush=True)
+            active_servers.append(srv)
+        except Exception as e:
+            print(f"Port {p} non disponible: {e}", flush=True)
+            
+    if not active_servers:
+        print("Erreur critique: Aucun port n'a pu être ouvert.", flush=True)
+        sys.exit(1)
+        
+    for srv in active_servers[1:]:
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        
+    try:
+        active_servers[0].serve_forever()
+    except KeyboardInterrupt:
+        pass
