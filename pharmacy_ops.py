@@ -262,7 +262,7 @@ def sell(c, u, idem, items, method, paid=None, customer_id=None, prescription_id
                 for l in _sellable_lots(c, ph, drug_id, bid):
                     take = min(needed, l["qty"])
                     if take > 0:
-                        ucost = l["purchase_cost"] or int(d["price"] * 0.72)
+                        ucost = l["purchase_cost"] if l["purchase_cost"] is not None else 0
                         lines.append((drug_id, l["id"], take, d["price"], ucost, f"{d['name']} (Lot {l['lot_no']} - Exp {l['expiry']})"))
                         total_cost += ucost * take
                         needed -= take
@@ -439,6 +439,7 @@ def get_finance_pnl(c, u):
     with DB_LOCK:
         sales = c.execute("SELECT COALESCE(SUM(total),0), COALESCE(SUM(total_cost),0) FROM sales WHERE pharmacy_id=?", (ph,)).fetchone()
         revenue, cogs = sales[0], sales[1]
+        missing_cost_cnt = c.execute("SELECT COUNT(*) FROM sale_lines WHERE pharmacy_id=? AND (unit_cost IS NULL OR unit_cost<=0)", (ph,)).fetchone()[0]
         gross_profit = revenue - cogs
         margin_pct = round((gross_profit / revenue) * 100, 1) if revenue > 0 else 0.0
         expenses = c.execute("SELECT COALESCE(SUM(amount),0) FROM expenses WHERE pharmacy_id=?", (ph,)).fetchone()[0]
@@ -449,6 +450,8 @@ def get_finance_pnl(c, u):
             "cogs": cogs,
             "gross_profit": gross_profit,
             "gross_margin_pct": margin_pct,
+            "incomplete_cost_data": missing_cost_cnt > 0,
+            "missing_cost_lines_count": missing_cost_cnt,
             "operating_expenses": expenses,
             "net_profit": net_profit,
             "inventory_valuation": inv_val
@@ -470,6 +473,11 @@ def owner_dashboard_stats(c, u):
         total_revenue_today = sum(s["total"] for s in sales_today)
         total_cost_today = sum(s["total_cost"] for s in sales_today)
         gross_profit_today = total_revenue_today - total_cost_today
+        missing_cost_today = c.execute("""
+            SELECT COUNT(*) FROM sale_lines sl
+            JOIN sales s ON s.id=sl.sale_id
+            WHERE sl.pharmacy_id=? AND s.ts LIKE ? AND (sl.unit_cost IS NULL OR sl.unit_cost<=0)
+        """, (ph, f"{today_date}%")).fetchone()[0]
         total_revenue_yesterday = sum(s["total"] for s in sales_yesterday)
 
         trend_pct = int(((total_revenue_today - total_revenue_yesterday) / total_revenue_yesterday) * 100) if total_revenue_yesterday > 0 else 0
@@ -518,6 +526,8 @@ def owner_dashboard_stats(c, u):
             "today_date": today.strftime("%d/%m/%Y"),
             "total_revenue_today": total_revenue_today,
             "estimated_profit": gross_profit_today,
+            "incomplete_cost_data": missing_cost_today > 0,
+            "missing_cost_lines_count": missing_cost_today,
             "trend_pct": trend_pct,
             "count_sales_today": count_sales_today,
             "avg_basket_today": avg_basket_today,
@@ -1001,7 +1011,7 @@ def list_expiring_lots(c, u, days_filter="90"):
         return results
 
 def receive_supplier_delivery(c, u, data):
-    """Réception fournisseur autonome par l'employé (y compris caissier autorisé) sans exposer les dettes."""
+    """Réception fournisseur multi-lignes (brouillon ou validation atomique) sans exposer les dettes."""
     need_pharmacy(c, u, "receive")
     ph = u["pharmacy_id"]
     bid = u.get("branch_id")
@@ -1009,57 +1019,61 @@ def receive_supplier_delivery(c, u, data):
     bl_number = data.get("bl_number", "")
     items = data.get("items", [])
     notes = data.get("notes", "")
+    req_status = data.get("status", "accepted")
+    if req_status not in ("draft", "accepted", "partial"):
+        req_status = "accepted"
     if not items:
         raise Conflict("Aucun article dans le bon de livraison.")
 
-    # Seul le titulaire / magasinier / comptable peut saisir des coûts d'achat
     can_set_cost = u.get("role") in ("owner", "stock", "accountant", "branch_manager")
 
     with DB_LOCK:
         c.execute("BEGIN IMMEDIATE")
         try:
-            for it in items:
-                did = int(it["drug_id"])
-                lot_no = it["lot_no"].strip()
-                expiry = it["expiry"].strip()
-                qty = int(it["qty"])
-                loc = it.get("storage_location", "Rayon Principal")
-                cond = it.get("condition", "ok")  # 'ok' ou 'damaged'
-                if qty <= 0:
-                    raise Conflict("Quantité invalide")
-                if not c.execute("SELECT 1 FROM drugs WHERE id=? AND pharmacy_id=?", (did, ph)).fetchone():
-                    raise Denied("Médicament introuvable dans votre organisation.")
+            if req_status in ("accepted", "partial"):
+                for it in items:
+                    did = int(it["drug_id"])
+                    lot_no = it["lot_no"].strip()
+                    expiry = it["expiry"].strip()
+                    qty = int(it["qty"])
+                    loc = it.get("storage_location", "Rayon Principal")
+                    cond = it.get("condition", "ok")
+                    if qty <= 0:
+                        raise Conflict("Quantité invalide")
+                    if not c.execute("SELECT 1 FROM drugs WHERE id=? AND pharmacy_id=?", (did, ph)).fetchone():
+                        raise Denied("Médicament introuvable dans votre organisation.")
 
-                cost = int(it.get("purchase_cost", 0)) if can_set_cost else 0
-                ed = parse_expiry(expiry).isoformat()
-                status = "ok" if cond == "ok" else "damaged"
+                    cost = int(it.get("purchase_cost", 0)) if can_set_cost else 0
+                    ed = parse_expiry(expiry).isoformat()
+                    status = "ok" if cond == "ok" else "damaged"
 
-                existing = c.execute("SELECT * FROM lots WHERE pharmacy_id=? AND drug_id=? AND lot_no=?", (ph, did, lot_no)).fetchone()
-                if existing:
-                    c.execute("UPDATE lots SET qty=qty+?, storage_location=? WHERE id=?", (qty, loc, existing["id"]))
-                    lid = existing["id"]
-                else:
-                    lid = c.execute("""
-                        INSERT INTO lots(pharmacy_id, branch_id, drug_id, lot_no, expiry, expiry_date, qty, purchase_cost, storage_location, status)
-                        VALUES(?,?,?,?,?,?,?,?,?,?)
-                    """, (ph, bid, did, lot_no, expiry, ed, qty, cost, loc, status)).lastrowid
+                    existing = c.execute("SELECT * FROM lots WHERE pharmacy_id=? AND drug_id=? AND lot_no=?", (ph, did, lot_no)).fetchone()
+                    if existing:
+                        c.execute("UPDATE lots SET qty=qty+?, storage_location=? WHERE id=?", (qty, loc, existing["id"]))
+                        lid = existing["id"]
+                    else:
+                        lid = c.execute("""
+                            INSERT INTO lots(pharmacy_id, branch_id, drug_id, lot_no, expiry, expiry_date, qty, purchase_cost, storage_location, status)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)
+                        """, (ph, bid, did, lot_no, expiry, ed, qty, cost, loc, status)).lastrowid
 
-                c.execute("INSERT INTO movements(pharmacy_id, branch_id, lot_id, type, qty, ref, user_id, ts) VALUES(?,?,?,?,?,?,?,?)",
-                          (ph, bid, lid, "in", qty, f"BL:{bl_number} ({supplier_name}) [{status}]", u["id"], now()))
+                    c.execute("INSERT INTO movements(pharmacy_id, branch_id, lot_id, type, qty, ref, user_id, ts) VALUES(?,?,?,?,?,?,?,?)",
+                              (ph, bid, lid, "in", qty, f"BL:{bl_number} ({supplier_name}) [{status}]", u["id"], now()))
 
             gr_id = c.execute("""
                 INSERT INTO goods_receipts(pharmacy_id, branch_id, user_id, supplier_name, bl_number, items_json, notes, status, created_at)
-                VALUES(?,?,?,?,?,?,?,'accepted',?)
-            """, (ph, bid, u["id"], supplier_name, bl_number, json.dumps(items), notes, now())).lastrowid
+                VALUES(?,?,?,?,?,?,?,?,?)
+            """, (ph, bid, u["id"], supplier_name, bl_number, json.dumps(items), notes, req_status, now())).lastrowid
 
-            _notify_pharmacy(c, ph, "owner", "Réception fournisseur enregistrée",
-                             f"BL {bl_number} ({supplier_name}) réceptionné par {u['username']} ({len(items)} ligne(s)).", "info")
+            if req_status != "draft":
+                _notify_pharmacy(c, ph, "owner", "Réception fournisseur enregistrée",
+                                 f"BL {bl_number} ({supplier_name}) réceptionné par {u['username']} ({len(items)} ligne(s)).", "info")
             c.execute("COMMIT")
         except Exception:
             c.execute("ROLLBACK")
             raise
-    audit_pharmacy(c, u, "goods_receipt", {"receipt_id": gr_id, "bl": bl_number, "items_count": len(items)})
-    return {"receipt_id": gr_id, "status": "accepted"}
+    audit_pharmacy(c, u, "goods_receipt", {"receipt_id": gr_id, "bl": bl_number, "status": req_status, "items_count": len(items)})
+    return {"receipt_id": gr_id, "status": req_status, "bl_number": bl_number, "supplier_name": supplier_name, "items_count": len(items), "created_at": now()}
 
 def list_goods_receipts(c, u):
     need_pharmacy(c, u, "receive")
@@ -1228,6 +1242,38 @@ def list_customers_operational(c, u):
             for r in rows:
                 r.pop("allergies", None)  # Confidentialité clinique pour caissiers
         return rows
+
+def update_customer(c, u, customer_id, data):
+    need_pharmacy(c, u, "customers")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        cust = c.execute("SELECT * FROM customers WHERE id=? AND pharmacy_id=?", (customer_id, ph)).fetchone()
+        if not cust:
+            raise Denied("Client introuvable dans votre organisation.")
+        c.execute("""
+            UPDATE customers SET name=?, phone=?, insurance_info=?, consent_sms=?
+            WHERE id=? AND pharmacy_id=?
+        """, (data.get("name", cust["name"]), data.get("phone", cust["phone"]),
+              data.get("insurance_info", cust["insurance_info"]), int(data.get("consent_sms", cust["consent_sms"])),
+              customer_id, ph))
+        if u.get("role") in ("owner", "pharmacist") and "allergies" in data:
+            c.execute("UPDATE customers SET allergies=? WHERE id=? AND pharmacy_id=?", (data["allergies"], customer_id, ph))
+    audit_pharmacy(c, u, "customer_update", {"customer_id": customer_id})
+    return {"status": "ok"}
+
+def get_customer_details(c, u, customer_id):
+    need_pharmacy(c, u, "customers")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        cust = c.execute("SELECT * FROM customers WHERE id=? AND pharmacy_id=?", (customer_id, ph)).fetchone()
+        if not cust:
+            raise Denied("Client introuvable dans votre organisation.")
+        cd = dict(cust)
+        if u.get("role") not in ("owner", "pharmacist"):
+            cd.pop("allergies", None)
+        txs = [dict(r) for r in c.execute("SELECT id, receipt_no, total, method, ts FROM sales WHERE pharmacy_id=? AND customer_id=? ORDER BY id DESC LIMIT 20", (ph, customer_id)).fetchall()]
+        cd["transactions"] = txs
+        return cd
 
 def intake_prescription(c, u, customer_id, doctor, drug_id, posology, refills_total, expiry_date):
     """Permet à un employé (ou caissier) d'enregistrer et transmettre une ordonnance au pharmacien pour validation."""

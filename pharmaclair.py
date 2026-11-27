@@ -5,6 +5,7 @@ Zéro dépendance externe (Python 3.11+ Standard Library uniquement).
 """
 import json
 import os
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +16,20 @@ import security
 import platform_saas
 import pharmacy_ops
 import seed_enterprise
+
+APP_VERSION = "3.2.0-Enterprise"
+DEMO_MODE = os.environ.get("DEMO_MODE", "0") == "1"
+
+def _get_git_commit():
+    sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    if sha:
+        return sha[:7]
+    try:
+        return subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        return "local"
+
+BUILD_COMMIT = _get_git_commit()
 
 PWA_MANIFEST = json.dumps({
     "name": "PharmaClair — Enterprise SaaS & Officine",
@@ -38,7 +53,7 @@ PWA_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" 
   <rect x="116" y="216" width="280" height="80" rx="20" fill="#ffffff"/>
 </svg>"""
 
-SERVICE_WORKER_JS = """const CACHE_NAME = 'pharmaclair-enterprise-v2';
+SERVICE_WORKER_JS = """const CACHE_NAME = 'pharmaclair-enterprise-v3';
 const ASSETS = ['/', '/index.html', '/workspace', '/platform-admin', '/manifest.webmanifest', '/icons/icon-192.svg', '/icons/icon-512.svg'];
 
 self.addEventListener('install', (e) => {
@@ -235,14 +250,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <div style="margin-bottom:1.25rem;"><label style="font-size:0.8rem; font-weight:600;">Mot de passe</label><input type="password" id="l-pass" required></div>
         <button type="submit" class="btn btn-primary" style="width:100%;">Se Connecter</button>
       </form>
-      <div style="margin-top:1.25rem; background:#f8fafc; padding:0.85rem; border-radius:8px;">
-        <div style="font-size:0.78rem; font-weight:700; color:var(--text-muted); margin-bottom:0.4rem;">Environnements de démonstration isolés :</div>
-        <span class="demo-pill" onclick="fillL('superadmin','admin123')">⚡ Super Admin (Plateforme)</span>
-        <span class="demo-pill" onclick="fillL('commercial1','rep123')">💼 Commercial CRM</span>
-        <span class="demo-pill" onclick="fillL('titulaire','admin123')">🏥 Pharmacie A (Owner)</span>
-        <span class="demo-pill" onclick="fillL('caissier1','caisse123')">🛒 Pharmacie A (Caissier)</span>
-        <span class="demo-pill" onclick="fillL('titulaire_b','admin123')">🏥 Pharmacie B (Owner)</span>
-      </div>
+      <!--DEMO_ACCOUNTS-->
     </div>
   </div>
 
@@ -751,46 +759,112 @@ HTML_PAGE = """<!DOCTYPE html>
       `;
     }
 
+    let RECEPTION_LINES = [];
     async function loadSupplierReceptionModule() {
       const drugs = await api('/drugs');
+      window.DRUGS_FOR_REC = drugs;
+      if (RECEPTION_LINES.length === 0 && drugs.length > 0) {
+        RECEPTION_LINES.push({ drug_id: drugs[0].id, lot_no: '', expiry: '2027-12', qty: 10, condition: 'ok' });
+      }
       const hist = await api('/api/receive/history');
       document.getElementById('main-content').innerHTML = `
-        <div class="card" style="max-width:750px;">
-          <div class="card-title">Réception Livraison Fournisseur</div>
-          <form onsubmit="submitDelivery(event)">
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:0.75rem;">
-              <div><label>Fournisseur</label><input id="del-sup" value="Laborex Cameroun" required></div>
-              <div><label>N° Bon de Livraison (BL)</label><input id="del-bl" placeholder="BL-2026-..." required></div>
-            </div>
-            <div style="display:grid; grid-template-columns:2fr 1fr 1fr 1fr; gap:0.5rem; margin-bottom:1rem;">
-              <div><label>Médicament</label><select id="del-drug">${drugs.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}</select></div>
-              <div><label>N° Lot</label><input id="del-lot" required></div>
-              <div><label>Exp (AAAA-MM)</label><input id="del-exp" placeholder="2027-12" required></div>
-              <div><label>Qté</label><input type="number" id="del-qty" min="1" required></div>
-            </div>
-            <button type="submit" class="btn btn-primary" style="width:100%;">Confirmer la Réception & Mettre en Stock</button>
-          </form>
-        </div>
         <div class="card">
-          <div class="card-title">Historique des Réceptions</div>
-          <table><thead><tr><th>Date</th><th>BL</th><th>Fournisseur</th><th>Réceptionné par</th><th>Statut</th></tr></thead><tbody>${hist.map(h=>`<tr><td>${h.created_at}</td><td><b>${h.bl_number}</b></td><td>${h.supplier_name}</td><td>${h.receiver_name}</td><td><span class="badge badge-success">${h.status}</span></td></tr>`).join('')}</tbody></table>
+          <div class="card-title">
+            <span>Réception Fournisseur Multi-Produits</span>
+            <button class="btn btn-secondary btn-sm" onclick="addReceptionLine()">+ Ajouter une ligne</button>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:0.75rem; margin-bottom:1rem;">
+            <div><label style="font-size:0.8rem;font-weight:600;">Fournisseur</label><input id="del-sup" value="Laborex Cameroun" required></div>
+            <div><label style="font-size:0.8rem;font-weight:600;">N° Bon de Livraison (BL)</label><input id="del-bl" placeholder="BL-2026-..." required></div>
+            <div><label style="font-size:0.8rem;font-weight:600;">Scan Code-Barres / Import CSV</label><input id="del-scan" placeholder="Scanner code-barres..." onchange="addByBarcode(this.value); this.value='';"></div>
+          </div>
+
+          <div style="margin-bottom:0.75rem;">
+            <label style="font-size:0.78rem; color:var(--text-muted);">Import rapide CSV (format: <code>ref_ou_barcode,lot_no,expiry,qty</code> une ligne par produit)</label>
+            <div style="display:flex; gap:0.5rem; margin-top:0.25rem;">
+              <textarea id="del-csv" rows="2" placeholder="PAR-500,LT-999,2027-12,50"></textarea>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="importDeliveryCSV()">Importer CSV</button>
+            </div>
+          </div>
+
+          <table>
+            <thead><tr><th>Médicament</th><th>N° Lot</th><th>Expiration</th><th>Qté</th><th>État</th><th>Action</th></tr></thead>
+            <tbody id="rec-lines-body"></tbody>
+          </table>
+
+          <div style="display:flex; gap:0.75rem; margin-top:1rem;">
+            <button type="button" class="btn btn-secondary" onclick="submitDelivery('draft')">💾 Enregistrer Brouillon</button>
+            <button type="button" class="btn btn-primary" style="flex:1;" onclick="submitDelivery('accepted')">✅ Valider Toute la Livraison & Imprimer Bon</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Historique des Bons de Réception</div>
+          <table><thead><tr><th>Date</th><th>BL</th><th>Fournisseur</th><th>Réceptionné par</th><th>Lignes</th><th>Statut</th></tr></thead>
+          <tbody>${hist.map(h=>{
+            let cnt = 0; try { cnt = JSON.parse(h.items_json||'[]').length; } catch(e){}
+            return `<tr><td>${h.created_at}</td><td><b>${h.bl_number}</b></td><td>${h.supplier_name}</td><td>${h.receiver_name}</td><td>${cnt}</td><td><span class="badge ${h.status==='accepted'?'badge-success':'badge-warning'}">${h.status}</span></td></tr>`;
+          }).join('')}</tbody></table>
         </div>
       `;
+      renderReceptionLines();
     }
-    async function submitDelivery(e) {
-      e.preventDefault();
-      await api('/api/receive/delivery', 'POST', {
-        supplier_name: document.getElementById('del-sup').value,
-        bl_number: document.getElementById('del-bl').value,
-        items: [{
-          drug_id: parseInt(document.getElementById('del-drug').value),
-          lot_no: document.getElementById('del-lot').value,
-          expiry: document.getElementById('del-exp').value,
-          qty: parseInt(document.getElementById('del-qty').value),
-          condition: 'ok'
-        }]
+
+    function renderReceptionLines() {
+      const drugs = window.DRUGS_FOR_REC || [];
+      const tb = document.getElementById('rec-lines-body');
+      if (!tb) return;
+      tb.innerHTML = RECEPTION_LINES.map((ln, idx) => `
+        <tr>
+          <td><select onchange="RECEPTION_LINES[${idx}].drug_id=parseInt(this.value)">${drugs.map(d=>`<option value="${d.id}" ${d.id===ln.drug_id?'selected':''}>${d.name}</option>`).join('')}</select></td>
+          <td><input value="${ln.lot_no}" onchange="RECEPTION_LINES[${idx}].lot_no=this.value" placeholder="LT-..."></td>
+          <td><input value="${ln.expiry}" onchange="RECEPTION_LINES[${idx}].expiry=this.value" placeholder="2027-12"></td>
+          <td><input type="number" min="1" value="${ln.qty}" onchange="RECEPTION_LINES[${idx}].qty=parseInt(this.value)" style="width:80px;"></td>
+          <td><select onchange="RECEPTION_LINES[${idx}].condition=this.value"><option value="ok" ${ln.condition==='ok'?'selected':''}>Conforme</option><option value="damaged" ${ln.condition==='damaged'?'selected':''}>Endommagé</option></select></td>
+          <td><button class="btn btn-danger btn-sm" onclick="RECEPTION_LINES.splice(${idx},1); renderReceptionLines()">✕</button></td>
+        </tr>
+      `).join('');
+    }
+    function addReceptionLine() {
+      const drugs = window.DRUGS_FOR_REC || [];
+      if (!drugs.length) return;
+      RECEPTION_LINES.push({ drug_id: drugs[0].id, lot_no: '', expiry: '2027-12', qty: 10, condition: 'ok' });
+      renderReceptionLines();
+    }
+    function addByBarcode(code) {
+      const drugs = window.DRUGS_FOR_REC || [];
+      const found = drugs.find(d => d.barcode === code.trim() || d.ref === code.trim());
+      if (!found) return alert('Code-barres ou référence introuvable : ' + code);
+      RECEPTION_LINES.push({ drug_id: found.id, lot_no: '', expiry: '2027-12', qty: 1, condition: 'ok' });
+      renderReceptionLines();
+    }
+    function importDeliveryCSV() {
+      const txt = (document.getElementById('del-csv').value || '').trim();
+      if (!txt) return;
+      const drugs = window.DRUGS_FOR_REC || [];
+      let added = 0;
+      txt.split(/\\r?\\n/).forEach(line => {
+        const parts = line.split(',').map(s => s.trim());
+        if (parts.length >= 4) {
+          const found = drugs.find(d => d.ref === parts[0] || d.barcode === parts[0]);
+          if (found) {
+            RECEPTION_LINES.push({ drug_id: found.id, lot_no: parts[1], expiry: parts[2], qty: parseInt(parts[3]) || 1, condition: 'ok' });
+            added++;
+          }
+        }
       });
-      alert('Livraison enregistrée et stock mis à jour !');
+      renderReceptionLines();
+      alert(added + ' ligne(s) importée(s) depuis le CSV.');
+    }
+    async function submitDelivery(status) {
+      const bl = document.getElementById('del-bl').value.trim();
+      const sup = document.getElementById('del-sup').value.trim();
+      if (!bl) return alert('Veuillez saisir le numéro de Bon de Livraison (BL).');
+      const validLines = RECEPTION_LINES.filter(l => l.lot_no && l.qty > 0);
+      if (!validLines.length) return alert('Veuillez renseigner au moins une ligne complète (N° Lot et Qté > 0).');
+      const res = await api('/api/receive/delivery', 'POST', { supplier_name: sup, bl_number: bl, status: status, items: validLines });
+      RECEPTION_LINES = [];
+      alert(status === 'draft' ? `Brouillon #${res.receipt_id} enregistré.` : `Livraison BL ${bl} validée (${res.items_count} lignes) et mise en stock !`);
       loadSupplierReceptionModule();
     }
 
@@ -824,26 +898,63 @@ HTML_PAGE = """<!DOCTYPE html>
       loadPhysicalCountModule();
     }
 
+    let CUSTOMERS_CACHE = [];
     async function loadCustomersModule() {
-      const custs = await api('/api/customers');
+      CUSTOMERS_CACHE = await api('/api/customers');
       document.getElementById('main-content').innerHTML = `
-        <div class="card" style="max-width:650px;">
+        <div class="card" style="max-width:750px;">
           <div class="card-title">Nouveau Client</div>
-          <form onsubmit="createCust(event)" style="display:grid; grid-template-columns:1fr 1fr auto; gap:0.5rem;">
+          <form onsubmit="createCust(event)" style="display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:0.5rem;">
             <input id="c-name" placeholder="Nom complet" required>
             <input id="c-phone" placeholder="Téléphone (+237...)" required>
+            <input id="c-ins" placeholder="Assurance (Optionnel)">
             <button type="submit" class="btn btn-primary">Enregistrer</button>
           </form>
         </div>
         <div class="card">
-          <div class="card-title">Répertoire Clients</div>
-          <table><thead><tr><th>Nom</th><th>Téléphone</th><th>Assurance</th><th>Date</th></tr></thead><tbody>${custs.map(c=>`<tr><td><b>${c.name}</b></td><td>${c.phone}</td><td>${c.insurance_info||'-'}</td><td>${c.ts}</td></tr>`).join('')}</tbody></table>
+          <div class="card-title">
+            <span>Répertoire Clients</span>
+            <input type="text" id="cust-q" placeholder="Rechercher nom ou téléphone..." oninput="renderCustomersTable()" style="max-width:260px;">
+          </div>
+          <table><thead><tr><th>Nom</th><th>Téléphone</th><th>Assurance</th><th>Action</th></tr></thead><tbody id="cust-tbody"></tbody></table>
         </div>
       `;
+      renderCustomersTable();
+    }
+    function renderCustomersTable() {
+      const q = (document.getElementById('cust-q')?.value || '').toLowerCase();
+      const tb = document.getElementById('cust-tbody');
+      if (!tb) return;
+      tb.innerHTML = CUSTOMERS_CACHE.filter(c => c.name.toLowerCase().includes(q) || (c.phone||'').includes(q)).map(c => `
+        <tr>
+          <td><b>${c.name}</b></td>
+          <td>${c.phone}</td>
+          <td>${c.insurance_info || '-'}</td>
+          <td>
+            <button class="btn btn-secondary btn-sm" onclick="editCust(${c.id})">Modifier</button>
+            <button class="btn btn-secondary btn-sm" onclick="viewCustHistory(${c.id})">Historique</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+    async function editCust(id) {
+      const c = CUSTOMERS_CACHE.find(x => x.id === id);
+      if (!c) return;
+      const newName = prompt('Nom complet :', c.name);
+      if (!newName) return;
+      const newPhone = prompt('Téléphone :', c.phone);
+      const newIns = prompt('Assurance / Tiers payant :', c.insurance_info || '');
+      await api('/api/customers/update', 'POST', { customer_id: id, name: newName, phone: newPhone || c.phone, insurance_info: newIns || '' });
+      loadCustomersModule();
+    }
+    async function viewCustHistory(id) {
+      const d = await api('/api/customers/' + id);
+      const txs = (d.transactions || []).map(t => `- Ticket ${t.receipt_no} : ${t.total.toLocaleString()} F (${t.ts})`).join('\\n');
+      alert(`Dossier Client : ${d.name} (${d.phone})\\nTransactions récentes :\\n${txs || 'Aucune transaction'}`);
     }
     async function createCust(e) {
       e.preventDefault();
-      await api('/api/customers/create', 'POST', { name: document.getElementById('c-name').value, phone: document.getElementById('c-phone').value });
+      await api('/api/customers/create', 'POST', { name: document.getElementById('c-name').value, phone: document.getElementById('c-phone').value, insurance_info: document.getElementById('c-ins').value });
       loadCustomersModule();
     }
 
@@ -920,11 +1031,13 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('mob-alert-low').innerText = `⚠️ ${s.low_stock_count} produit(s) en stock faible`;
       document.getElementById('mob-alert-exp').innerText = `⏳ ${s.expiring_count} lot(s) à péremption imminente`;
 
+      const cogsWarning = s.incomplete_cost_data ? `<div style="background:#fef3c7; border:1px solid #f59e0b; color:#92400e; padding:0.75rem 1rem; border-radius:8px; margin-bottom:1rem; font-size:0.85rem;">⚠️ <b>Données de coûts incomplètes</b> : ${s.missing_cost_lines_count} ligne(s) vendue(s) n'ont pas de coût d'achat renseigné. La marge brute affichée ne reflète pas les lots sans coût d'achat.</div>` : '';
       document.getElementById('main-content').innerHTML = `
         <div class="card-title"><h2>Tableau de bord Direction (${s.today_date})</h2></div>
+        ${cogsWarning}
         <div class="kpi-grid">
           <div class="kpi-card"><div class="kpi-label">Chiffre d'affaires jour</div><div class="kpi-val">${s.total_revenue_today.toLocaleString()} F</div><div class="kpi-sub">${s.trend_pct}% vs hier</div></div>
-          <div class="kpi-card sec"><div class="kpi-label">Marge Brute Réelle (COGS)</div><div class="kpi-val">${s.estimated_profit.toLocaleString()} F</div><div class="kpi-sub">Basé sur coût réel des lots</div></div>
+          <div class="kpi-card sec"><div class="kpi-label">Marge Brute Réelle (COGS)</div><div class="kpi-val">${s.estimated_profit.toLocaleString()} F</div><div class="kpi-sub">${s.incomplete_cost_data ? 'Partielle (coûts manquants)' : 'Basé sur coût réel des lots'}</div></div>
           <div class="kpi-card acc"><div class="kpi-label">Transactions</div><div class="kpi-val">${s.count_sales_today}</div><div class="kpi-sub">Panier moyen: ${s.avg_basket_today.toLocaleString()} F</div></div>
           <div class="kpi-card dng"><div class="kpi-label">Lots à Risque (≤ 3 mois)</div><div class="kpi-val">${s.expiring_count}</div><div class="kpi-sub">Stock faible: ${s.low_stock_count}</div></div>
         </div>
@@ -1061,7 +1174,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
     async function loadFinanceView() {
       const f = await api('/api/finance/pnl');
-      document.getElementById('main-content').innerHTML = `<div class="card"><div class="card-title">Finances & Compte de Résultat (P&L)</div><div class="kpi-grid"><div class="kpi-card"><div class="kpi-label">Chiffre d'affaires</div><div class="kpi-val">${f.total_revenue.toLocaleString()} F</div></div><div class="kpi-card sec"><div class="kpi-label">Coût des ventes (COGS)</div><div class="kpi-val">${f.cogs.toLocaleString()} F</div></div><div class="kpi-card"><div class="kpi-label">Bénéfice Brut (${f.gross_margin_pct}%)</div><div class="kpi-val">${f.gross_profit.toLocaleString()} F</div></div><div class="kpi-card dng"><div class="kpi-label">Résultat Net</div><div class="kpi-val">${f.net_profit.toLocaleString()} F</div></div></div></div>`;
+      const warn = f.incomplete_cost_data ? `<div style="background:#fef3c7; border:1px solid #f59e0b; color:#92400e; padding:0.75rem 1rem; border-radius:8px; margin-bottom:1rem; font-size:0.85rem;">⚠️ <b>Données incomplètes</b> : ${f.missing_cost_lines_count} ligne(s) vendue(s) n'ont pas de coût d'achat. Aucune marge fictive n'est estimée.</div>` : '';
+      document.getElementById('main-content').innerHTML = `<div class="card"><div class="card-title">Finances & Compte de Résultat (P&L)</div>${warn}<div class="kpi-grid"><div class="kpi-card"><div class="kpi-label">Chiffre d'affaires</div><div class="kpi-val">${f.total_revenue.toLocaleString()} F</div></div><div class="kpi-card sec"><div class="kpi-label">Coût des ventes (COGS)</div><div class="kpi-val">${f.cogs.toLocaleString()} F</div></div><div class="kpi-card"><div class="kpi-label">Bénéfice Brut (${f.gross_margin_pct}%)</div><div class="kpi-val">${f.gross_profit.toLocaleString()} F</div></div><div class="kpi-card dng"><div class="kpi-label">Résultat Net</div><div class="kpi-val">${f.net_profit.toLocaleString()} F</div></div></div></div>`;
     }
 
     function loadClosingView() {
@@ -1090,7 +1204,20 @@ HTML_PAGE = """<!DOCTYPE html>
 
     async function loadSettingsView() {
       const s = await api('/api/settings');
-      document.getElementById('main-content').innerHTML = `<div class="card" style="max-width:650px;"><div class="card-title">Paramètres de l'Officine</div><form onsubmit="saveSet(event)"><label>Nom Pharmacie</label><input id="s-name" value="${s.name||''}" style="margin-bottom:0.75rem;"><label>Adresse</label><input id="s-addr" value="${s.address||''}" style="margin-bottom:0.75rem;"><label>Format Ticket</label><select id="s-fmt" style="margin-bottom:1rem;"><option value="80mm" ${s.receipt_format==='80mm'?'selected':''}>80 mm</option><option value="58mm" ${s.receipt_format==='58mm'?'selected':''}>58 mm</option></select><button type="submit" class="btn btn-primary">Enregistrer</button></form></div>`;
+      const p = await api('/api/ping').catch(() => ({ version: '?', commit: '?' }));
+      document.getElementById('main-content').innerHTML = `
+        <div class="card" style="max-width:650px;">
+          <div class="card-title">
+            <span>Paramètres de l'Officine</span>
+            <span class="badge badge-info">Build ${p.version || ''} (${p.commit || ''})</span>
+          </div>
+          <form onsubmit="saveSet(event)">
+            <label>Nom Pharmacie</label><input id="s-name" value="${s.name||''}" style="margin-bottom:0.75rem;">
+            <label>Adresse</label><input id="s-addr" value="${s.address||''}" style="margin-bottom:0.75rem;">
+            <label>Format Ticket</label><select id="s-fmt" style="margin-bottom:1rem;"><option value="80mm" ${s.receipt_format==='80mm'?'selected':''}>80 mm</option><option value="58mm" ${s.receipt_format==='58mm'?'selected':''}>58 mm</option></select>
+            <button type="submit" class="btn btn-primary">Enregistrer</button>
+          </form>
+        </div>`;
     }
     async function saveSet(e) {
       e.preventDefault();
@@ -1138,7 +1265,15 @@ def make_handler(c):
             p = path.split("/")
 
             if method == "GET" and path in ("/", "/index.html", "/workspace", "/platform-admin"):
-                return self._send(200, HTML_PAGE, "text/html; charset=utf-8")
+                demo_html = ""
+                if DEMO_MODE:
+                    demo_html = """<div style="margin-top:1.25rem; background:#f8fafc; padding:0.85rem; border-radius:8px;">
+                      <div style="font-size:0.78rem; font-weight:700; color:var(--text-muted); margin-bottom:0.4rem;">Environnements de démonstration isolés :</div>
+                      <span class="demo-pill" onclick="fillL('superadmin','admin123')">⚡ Super Admin</span>
+                      <span class="demo-pill" onclick="fillL('titulaire','admin123')">🏥 Pharmacie A (Owner)</span>
+                      <span class="demo-pill" onclick="fillL('caissier1','caisse123')">🛒 Pharmacie A (Caissier)</span>
+                    </div>"""
+                return self._send(200, HTML_PAGE.replace("<!--DEMO_ACCOUNTS-->", demo_html), "text/html; charset=utf-8")
             if method == "GET" and path in ("/manifest.webmanifest", "/manifest.json"):
                 return self._send(200, PWA_MANIFEST, "application/manifest+json; charset=utf-8")
             if method == "GET" and path == "/sw.js":
@@ -1146,7 +1281,7 @@ def make_handler(c):
             if method == "GET" and path.startswith("/icons/"):
                 return self._send(200, PWA_ICON_SVG, "image/svg+xml; charset=utf-8")
             if method == "GET" and path == "/api/ping":
-                return self._send(200, {"status": "ok", "server_time": schema.now()})
+                return self._send(200, {"status": "ok", "version": APP_VERSION, "commit": BUILD_COMMIT, "server_time": schema.now()})
 
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}") if n > 0 else {}
@@ -1209,6 +1344,10 @@ def make_handler(c):
                     return self._send(200, pharmacy_ops.list_customers_operational(c, u))
                 if method == "POST" and path == "/api/customers/create":
                     return self._send(200, {"customer_id": pharmacy_ops.create_customer(c, u, body["name"], body["phone"], body.get("allergies", ""), body.get("insurance_info", ""))})
+                if method == "POST" and path == "/api/customers/update":
+                    return self._send(200, pharmacy_ops.update_customer(c, u, int(body["customer_id"]), body))
+                if method == "GET" and len(p) == 4 and p[1] == "api" and p[2] == "customers" and p[3].isdigit():
+                    return self._send(200, pharmacy_ops.get_customer_details(c, u, int(p[3])))
                 if method == "POST" and path == "/api/prescriptions/intake":
                     return self._send(200, pharmacy_ops.intake_prescription(c, u, int(body["customer_id"]), body["doctor"], int(body["drug_id"]), body["posology"], int(body["refills_total"]), body["expiry_date"]))
                 if method == "POST" and path == "/api/prescriptions/validate":
