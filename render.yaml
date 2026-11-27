@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: pharmaclair
+    env: python
+    buildCommand: ""
+    startCommand: "python pharmaclair.py"
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: EXPIRY_MONTH_RULE
+        value: end
