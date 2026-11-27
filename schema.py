@@ -622,6 +622,7 @@ def run_migrations(c):
         _add_col_if_missing(c, "lots", "supplier_id", "INT DEFAULT NULL")
         _add_col_if_missing(c, "lots", "storage_location", "TEXT DEFAULT 'Rayon Principal'")
 
+        _add_col_if_missing(c, "sales", "customer_id", "INT DEFAULT NULL")
         _add_col_if_missing(c, "sales", "branch_id", "INT DEFAULT NULL")
         _add_col_if_missing(c, "sales", "total_cost", "INT DEFAULT 0")
         _add_col_if_missing(c, "sales", "discount", "INT DEFAULT 0")
@@ -641,6 +642,10 @@ def run_migrations(c):
         _add_col_if_missing(c, "audit", "reason", "TEXT DEFAULT ''")
 
         _add_col_if_missing(c, "user_logins", "pharmacy_id", "INT DEFAULT NULL")
+        _add_col_if_missing(c, "movements", "branch_id", "INT DEFAULT NULL")
+        _add_col_if_missing(c, "cash_closings", "branch_id", "INT DEFAULT NULL")
+        _add_col_if_missing(c, "expenses", "branch_id", "INT DEFAULT NULL")
+        _add_col_if_missing(c, "device_enrollments", "branch_id", "INT DEFAULT NULL")
 
 def connect(path=":memory:"):
     c = sqlite3.connect(path, isolation_level=None, timeout=15, check_same_thread=False)
