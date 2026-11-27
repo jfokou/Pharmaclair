@@ -816,3 +816,464 @@ def export_pharmacy_backup_json(c, u):
         }
     audit_pharmacy(c, u, "tenant_data_export", {"tables": list(data.keys())})
     return data
+
+# ============================================================================
+# WORKFLOWS OPÉRATIONNELS EMPLOYÉS, CAISSE INDIVIDUELLE, APPROBATIONS & TÂCHES
+# ============================================================================
+
+def _notify_pharmacy(c, ph, target_role, title, message, category="info", target_user_id=None):
+    c.execute("""
+        INSERT INTO operational_notifications(pharmacy_id, target_role, target_user_id, title, message, category, created_at)
+        VALUES(?,?,?,?,?,?,?)
+    """, (ph, target_role, target_user_id, title, message, category, now()))
+
+def employee_workspace_summary(c, u):
+    """Tableau de bord opérationnel dédié aux employés (sans exposer CA global ni marges)."""
+    need_pharmacy(c, u, "stock_view")
+    ph = u["pharmacy_id"]
+    today = dt.datetime.now(TZ).date()
+    today_iso = today.isoformat()
+    in_90_days = (today + dt.timedelta(days=90)).isoformat()
+
+    with DB_LOCK:
+        cash_sess = c.execute("""
+            SELECT id, opening_balance, status, opened_at
+            FROM cash_sessions WHERE pharmacy_id=? AND user_id=? AND status='open'
+            ORDER BY id DESC LIMIT 1
+        """, (ph, u["id"])).fetchone()
+
+        expiring_count = c.execute("""
+            SELECT COUNT(*) FROM lots
+            WHERE pharmacy_id=? AND qty>0 AND status='ok' AND expiry_date<=?
+        """, (ph, in_90_days)).fetchone()[0]
+
+        low_stock_count = c.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT d.id, d.min_stock, COALESCE(SUM(l.qty),0) as stk
+                FROM drugs d
+                LEFT JOIN lots l ON l.drug_id=d.id AND l.pharmacy_id=? AND l.status='ok' AND l.qty>0 AND l.expiry_date>=?
+                WHERE d.pharmacy_id=?
+                GROUP BY d.id
+                HAVING stk <= d.min_stock
+            )
+        """, (ph, today_iso, ph)).fetchone()[0]
+
+        pending_po = c.execute("SELECT COUNT(*) FROM purchase_orders WHERE pharmacy_id=? AND status IN ('approved','partial')", (ph,)).fetchone()[0]
+        tasks = [dict(r) for r in c.execute("""
+            SELECT * FROM employee_tasks
+            WHERE pharmacy_id=? AND (assigned_to=? OR assigned_to=0) AND status='pending'
+            ORDER BY id DESC LIMIT 15
+        """, (ph, u["id"])).fetchall()]
+
+        notifs = [dict(r) for r in c.execute("""
+            SELECT * FROM operational_notifications
+            WHERE pharmacy_id=? AND (target_user_id=? OR target_role='all' OR target_role=?)
+            ORDER BY id DESC LIMIT 15
+        """, (ph, u["id"], u["role"])).fetchall()]
+
+        p = c.execute("SELECT name, city FROM pharmacies WHERE id=?", (ph,)).fetchone()
+        return {
+            "pharmacy_name": p["name"] if p else "Officine",
+            "date_display": today.strftime("%A %d %B %Y"),
+            "cash_session": dict(cash_sess) if cash_sess else None,
+            "expiring_count": expiring_count,
+            "low_stock_count": low_stock_count,
+            "pending_deliveries_count": pending_po,
+            "tasks": tasks,
+            "notifications": notifs
+        }
+
+def open_cash_register(c, u, opening_balance):
+    need_pharmacy(c, u, "cash_count")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        existing = c.execute("SELECT id FROM cash_sessions WHERE pharmacy_id=? AND user_id=? AND status='open'", (ph, u["id"])).fetchone()
+        if existing:
+            return existing["id"]
+        sid = c.execute("""
+            INSERT INTO cash_sessions(pharmacy_id, branch_id, user_id, opening_balance, status, opened_at)
+            VALUES(?,?,?,?,'open',?)
+        """, (ph, u.get("branch_id"), u["id"], int(opening_balance), now())).lastrowid
+    audit_pharmacy(c, u, "cash_register_open", {"session_id": sid, "opening_balance": opening_balance})
+    return sid
+
+def get_my_cash_register(c, u):
+    need_pharmacy(c, u, "cash_count")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        sess = c.execute("SELECT * FROM cash_sessions WHERE pharmacy_id=? AND user_id=? ORDER BY id DESC LIMIT 1", (ph, u["id"])).fetchone()
+        if not sess:
+            return {"session": None, "cash_sales": 0, "om_sales": 0, "card_sales": 0, "expected_cash": 0}
+        sess_d = dict(sess)
+        sales = c.execute("""
+            SELECT method, total FROM sales
+            WHERE pharmacy_id=? AND user_id=? AND ts>=?
+        """, (ph, u["id"], sess["opened_at"])).fetchall()
+        cash_sales = sum(s["total"] for s in sales if s["method"] == "cash")
+        om_sales = sum(s["total"] for s in sales if s["method"] in ("om", "mtn_momo", "orange_money"))
+        card_sales = sum(s["total"] for s in sales if s["method"] == "card")
+        expected_cash = sess["opening_balance"] + cash_sales
+        return {
+            "session": sess_d,
+            "cash_sales": cash_sales,
+            "om_sales": om_sales,
+            "card_sales": card_sales,
+            "expected_cash": expected_cash
+        }
+
+def close_cash_register(c, u, counted_cash, comments=""):
+    need_pharmacy(c, u, "cash_count")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        sess = c.execute("SELECT * FROM cash_sessions WHERE pharmacy_id=? AND user_id=? AND status='open' ORDER BY id DESC LIMIT 1", (ph, u["id"])).fetchone()
+        if not sess:
+            raise Conflict("Aucune session de caisse ouverte à clôturer.")
+        sales = c.execute("SELECT method, total FROM sales WHERE pharmacy_id=? AND user_id=? AND ts>=?", (ph, u["id"], sess["opened_at"])).fetchall()
+        cash_sales = sum(s["total"] for s in sales if s["method"] == "cash")
+        om_sales = sum(s["total"] for s in sales if s["method"] in ("om", "mtn_momo", "orange_money"))
+        card_sales = sum(s["total"] for s in sales if s["method"] == "card")
+        expected_cash = sess["opening_balance"] + cash_sales
+        diff_cash = int(counted_cash) - expected_cash
+
+        c.execute("""
+            UPDATE cash_sessions
+            SET counted_cash=?, expected_cash=?, diff_cash=?, total_om=?, total_card=?, status='closed', comments=?, closed_at=?
+            WHERE id=? AND pharmacy_id=?
+        """, (int(counted_cash), expected_cash, diff_cash, om_sales, card_sales, comments, now(), sess["id"], ph))
+
+        # Enregistrement dans cash_closings pour la supervision du titulaire
+        c.execute("""
+            INSERT INTO cash_closings(pharmacy_id, branch_id, user_id, date_str, initial_cash, counted_cash, theoretical_cash, diff_cash, total_om, total_card, total_day, ts)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (ph, u.get("branch_id"), u["id"], dt.datetime.now(TZ).date().isoformat(),
+              sess["opening_balance"], int(counted_cash), expected_cash, diff_cash, om_sales, card_sales, cash_sales + om_sales + card_sales, now()))
+
+        if diff_cash != 0:
+            _notify_pharmacy(c, ph, "owner", "Écart de caisse signalé",
+                             f"Clôture caisse par {u['username']} avec un écart de {diff_cash} FCFA.", "warning")
+
+    audit_pharmacy(c, u, "cash_register_close", {"session_id": sess["id"], "diff_cash": diff_cash})
+    return {"status": "closed", "expected_cash": expected_cash, "counted_cash": int(counted_cash), "diff_cash": diff_cash}
+
+def list_expiring_lots(c, u, days_filter="90"):
+    """Module dédié aux péremptions. Masque les coûts financiers aux employés non autorisés."""
+    need_pharmacy(c, u, "stock_view")
+    ph = u["pharmacy_id"]
+    today = dt.datetime.now(TZ).date()
+    show_costs = u.get("role") in ("owner", "accountant", "auditor")
+
+    with DB_LOCK:
+        rows = c.execute("""
+            SELECT l.*, d.name as drug_name, d.dosage, d.form, d.pack
+            FROM lots l
+            JOIN drugs d ON d.id=l.drug_id AND d.pharmacy_id=l.pharmacy_id
+            WHERE l.pharmacy_id=? AND l.qty>0
+            ORDER BY l.expiry_date ASC
+        """, (ph,)).fetchall()
+
+        results = []
+        for r in rows:
+            try:
+                exp_d = dt.date.fromisoformat(r["expiry_date"][:10])
+                days_left = (exp_d - today).days
+            except Exception:
+                days_left = 999
+
+            include = False
+            if days_filter == "expired":
+                include = days_left < 0
+            else:
+                limit = int(days_filter)
+                include = days_left <= limit
+
+            if include:
+                item = {
+                    "id": r["id"], "drug_id": r["drug_id"], "drug_name": r["drug_name"],
+                    "dosage": r["dosage"] or "", "form": r["form"] or "", "pack": r["pack"] or "",
+                    "lot_no": r["lot_no"], "expiry": r["expiry"], "expiry_date": r["expiry_date"],
+                    "qty": r["qty"], "storage_location": r["storage_location"] or "Rayon Principal",
+                    "days_left": days_left, "status": r["status"]
+                }
+                if show_costs:
+                    item["purchase_cost"] = r["purchase_cost"]
+                    item["value_at_risk"] = r["qty"] * (r["purchase_cost"] or 0)
+                results.append(item)
+        return results
+
+def receive_supplier_delivery(c, u, data):
+    """Réception fournisseur autonome par l'employé (y compris caissier autorisé) sans exposer les dettes."""
+    need_pharmacy(c, u, "receive")
+    ph = u["pharmacy_id"]
+    bid = u.get("branch_id")
+    supplier_name = data.get("supplier_name", "Fournisseur Standard")
+    bl_number = data.get("bl_number", "")
+    items = data.get("items", [])
+    notes = data.get("notes", "")
+    if not items:
+        raise Conflict("Aucun article dans le bon de livraison.")
+
+    # Seul le titulaire / magasinier / comptable peut saisir des coûts d'achat
+    can_set_cost = u.get("role") in ("owner", "stock", "accountant", "branch_manager")
+
+    with DB_LOCK:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            for it in items:
+                did = int(it["drug_id"])
+                lot_no = it["lot_no"].strip()
+                expiry = it["expiry"].strip()
+                qty = int(it["qty"])
+                loc = it.get("storage_location", "Rayon Principal")
+                cond = it.get("condition", "ok")  # 'ok' ou 'damaged'
+                if qty <= 0:
+                    raise Conflict("Quantité invalide")
+                if not c.execute("SELECT 1 FROM drugs WHERE id=? AND pharmacy_id=?", (did, ph)).fetchone():
+                    raise Denied("Médicament introuvable dans votre organisation.")
+
+                cost = int(it.get("purchase_cost", 0)) if can_set_cost else 0
+                ed = parse_expiry(expiry).isoformat()
+                status = "ok" if cond == "ok" else "damaged"
+
+                existing = c.execute("SELECT * FROM lots WHERE pharmacy_id=? AND drug_id=? AND lot_no=?", (ph, did, lot_no)).fetchone()
+                if existing:
+                    c.execute("UPDATE lots SET qty=qty+?, storage_location=? WHERE id=?", (qty, loc, existing["id"]))
+                    lid = existing["id"]
+                else:
+                    lid = c.execute("""
+                        INSERT INTO lots(pharmacy_id, branch_id, drug_id, lot_no, expiry, expiry_date, qty, purchase_cost, storage_location, status)
+                        VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """, (ph, bid, did, lot_no, expiry, ed, qty, cost, loc, status)).lastrowid
+
+                c.execute("INSERT INTO movements(pharmacy_id, branch_id, lot_id, type, qty, ref, user_id, ts) VALUES(?,?,?,?,?,?,?,?)",
+                          (ph, bid, lid, "in", qty, f"BL:{bl_number} ({supplier_name}) [{status}]", u["id"], now()))
+
+            gr_id = c.execute("""
+                INSERT INTO goods_receipts(pharmacy_id, branch_id, user_id, supplier_name, bl_number, items_json, notes, status, created_at)
+                VALUES(?,?,?,?,?,?,?,'accepted',?)
+            """, (ph, bid, u["id"], supplier_name, bl_number, json.dumps(items), notes, now())).lastrowid
+
+            _notify_pharmacy(c, ph, "owner", "Réception fournisseur enregistrée",
+                             f"BL {bl_number} ({supplier_name}) réceptionné par {u['username']} ({len(items)} ligne(s)).", "info")
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+    audit_pharmacy(c, u, "goods_receipt", {"receipt_id": gr_id, "bl": bl_number, "items_count": len(items)})
+    return {"receipt_id": gr_id, "status": "accepted"}
+
+def list_goods_receipts(c, u):
+    need_pharmacy(c, u, "receive")
+    with DB_LOCK:
+        return [dict(r) for r in c.execute("""
+            SELECT gr.*, u.username as receiver_name
+            FROM goods_receipts gr JOIN users u ON u.id=gr.user_id
+            WHERE gr.pharmacy_id=? ORDER BY gr.id DESC LIMIT 50
+        """, (u["pharmacy_id"],)).fetchall()]
+
+def submit_inventory_count(c, u, lot_id, counted_qty, note=""):
+    """L'employé saisit le comptage physique. Tout écart génère une demande d'approbation au titulaire."""
+    need_pharmacy(c, u, "count")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        lot = c.execute("SELECT * FROM lots WHERE id=? AND pharmacy_id=?", (lot_id, ph)).fetchone()
+        if not lot:
+            raise Denied("Lot introuvable dans votre organisation.")
+        sys_qty = lot["qty"]
+        disc = int(counted_qty) - sys_qty
+        cid = c.execute("""
+            INSERT INTO inventory_counts(pharmacy_id, branch_id, user_id, drug_id, lot_id, system_qty, counted_qty, discrepancy, note, status, created_at)
+            VALUES(?,?,?,?,?,?,?,?,?, ?, ?)
+        """, (ph, u.get("branch_id"), u["id"], lot["drug_id"], lot_id, sys_qty, int(counted_qty), disc, note,
+              "matched" if disc == 0 else "pending_review", now())).lastrowid
+
+        req_id = None
+        if disc != 0:
+            payload = {"count_id": cid, "lot_id": lot_id, "lot_no": lot["lot_no"], "system_qty": sys_qty, "counted_qty": int(counted_qty), "discrepancy": disc}
+            req_id = c.execute("""
+                INSERT INTO approval_requests(pharmacy_id, branch_id, user_id, request_type, target_id, payload_json, reason, status, created_at)
+                VALUES(?,?,?,'inventory_adjustment',?,?,?, 'pending', ?)
+            """, (ph, u.get("branch_id"), u["id"], lot_id, json.dumps(payload), note or f"Écart inventaire physique ({disc:+d})", now())).lastrowid
+
+            _notify_pharmacy(c, ph, "owner", "Écart d'inventaire à valider",
+                             f"{u['username']} a compté {counted_qty} au lieu de {sys_qty} pour le lot {lot['lot_no']}.", "warning")
+    audit_pharmacy(c, u, "inventory_count", {"count_id": cid, "lot_id": lot_id, "discrepancy": disc})
+    return {"count_id": cid, "discrepancy": disc, "approval_request_id": req_id}
+
+def submit_approval_request(c, u, request_type, target_id, payload, reason):
+    need_pharmacy(c, u, "requests")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        rid = c.execute("""
+            INSERT INTO approval_requests(pharmacy_id, branch_id, user_id, request_type, target_id, payload_json, reason, status, created_at)
+            VALUES(?,?,?,?,?,?,?, 'pending', ?)
+        """, (ph, u.get("branch_id"), u["id"], request_type, target_id, json.dumps(payload), reason, now())).lastrowid
+        _notify_pharmacy(c, ph, "owner", "Nouvelle demande d'approbation",
+                         f"{u['username']} a soumis une demande ({request_type}).", "info")
+    audit_pharmacy(c, u, "approval_submit", {"request_id": rid, "type": request_type})
+    return rid
+
+def list_approval_requests(c, u):
+    ph = u["pharmacy_id"]
+    is_approver = u.get("role") in ("owner", "branch_manager", "pharmacist")
+    if not is_approver:
+        need_pharmacy(c, u, "requests")
+    with DB_LOCK:
+        if is_approver:
+            rows = c.execute("""
+                SELECT ar.*, u.username as requester_name
+                FROM approval_requests ar JOIN users u ON u.id=ar.user_id
+                WHERE ar.pharmacy_id=? ORDER BY ar.id DESC LIMIT 60
+            """, (ph,)).fetchall()
+        else:
+            rows = c.execute("""
+                SELECT ar.*, u.username as requester_name
+                FROM approval_requests ar JOIN users u ON u.id=ar.user_id
+                WHERE ar.pharmacy_id=? AND ar.user_id=? ORDER BY ar.id DESC LIMIT 40
+            """, (ph, u["id"])).fetchall()
+        return [dict(r) for r in rows]
+
+def review_approval_request(c, u, request_id, decision, review_note=""):
+    """Seul le titulaire ou manager autorisé peut approuver/rejeter et appliquer l'ajustement."""
+    if u.get("role") not in ("owner", "branch_manager"):
+        raise Denied("Seul le titulaire ou responsable autorisé peut valider les ajustements.")
+    if decision not in ("approved", "rejected", "returned"):
+        raise Conflict("Décision invalide")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            req = c.execute("SELECT * FROM approval_requests WHERE id=? AND pharmacy_id=?", (request_id, ph)).fetchone()
+            if not req:
+                raise Denied("Demande introuvable dans votre organisation.")
+            if req["status"] != "pending":
+                raise Conflict("Cette demande a déjà été traitée.")
+
+            if decision == "approved" and req["request_type"] == "inventory_adjustment":
+                payload = json.loads(req["payload_json"] or "{}")
+                lot_id = int(req["target_id"])
+                new_qty = int(payload["counted_qty"])
+                lot = c.execute("SELECT qty FROM lots WHERE id=? AND pharmacy_id=?", (lot_id, ph)).fetchone()
+                if lot:
+                    diff = new_qty - lot["qty"]
+                    c.execute("UPDATE lots SET qty=? WHERE id=? AND pharmacy_id=?", (new_qty, lot_id, ph))
+                    c.execute("INSERT INTO movements(pharmacy_id, branch_id, lot_id, type, qty, ref, user_id, ts) VALUES(?,?,?,?,?,?,?,?)",
+                              (ph, req["branch_id"], lot_id, "adjust", diff, f"Ajustement approuvé #{request_id}", u["id"], now()))
+                    if payload.get("count_id"):
+                        c.execute("UPDATE inventory_counts SET status='approved' WHERE id=?", (payload["count_id"],))
+
+            c.execute("""
+                UPDATE approval_requests SET status=?, reviewed_by=?, review_note=?, reviewed_at=?
+                WHERE id=? AND pharmacy_id=?
+            """, (decision, u["id"], review_note, now(), request_id, ph))
+
+            _notify_pharmacy(c, ph, "all", f"Demande {decision}",
+                             f"Votre demande #{request_id} a été marquée : {decision}.", "info", target_user_id=req["user_id"])
+            c.execute("COMMIT")
+        except Exception:
+            c.execute("ROLLBACK")
+            raise
+    audit_pharmacy(c, u, "approval_review", {"request_id": request_id, "decision": decision})
+    return {"status": decision}
+
+def create_employee_task(c, u, assigned_to, title, instructions="", priority="normal", due_date=""):
+    if u.get("role") not in ("owner", "branch_manager", "pharmacist"):
+        raise Denied("Permission requise pour assigner des tâches.")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        tid = c.execute("""
+            INSERT INTO employee_tasks(pharmacy_id, branch_id, assigned_to, assigned_by, title, instructions, priority, due_date, status, created_at)
+            VALUES(?,?,?,?,?,?,?,?,'pending',?)
+        """, (ph, u.get("branch_id"), int(assigned_to), u["id"], title, instructions, priority, due_date, now())).lastrowid
+        _notify_pharmacy(c, ph, "all", "Nouvelle tâche assignée", title, "info", target_user_id=int(assigned_to) if int(assigned_to) > 0 else None)
+    audit_pharmacy(c, u, "task_create", {"task_id": tid, "title": title})
+    return tid
+
+def list_tasks(c, u):
+    need_pharmacy(c, u, "tasks")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        if u.get("role") in ("owner", "branch_manager"):
+            return [dict(r) for r in c.execute("""
+                SELECT t.*, u.username as assignee_name
+                FROM employee_tasks t LEFT JOIN users u ON u.id=t.assigned_to
+                WHERE t.pharmacy_id=? ORDER BY t.id DESC LIMIT 50
+            """, (ph,)).fetchall()]
+        return [dict(r) for r in c.execute("""
+            SELECT t.*, u.username as assignee_name
+            FROM employee_tasks t LEFT JOIN users u ON u.id=t.assigned_to
+            WHERE t.pharmacy_id=? AND (t.assigned_to=? OR t.assigned_to=0)
+            ORDER BY t.id DESC LIMIT 50
+        """, (ph, u["id"])).fetchall()]
+
+def complete_employee_task(c, u, task_id, completion_note=""):
+    need_pharmacy(c, u, "tasks")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        t = c.execute("SELECT * FROM employee_tasks WHERE id=? AND pharmacy_id=?", (task_id, ph)).fetchone()
+        if not t:
+            raise Denied("Tâche introuvable.")
+        c.execute("UPDATE employee_tasks SET status='completed', completion_note=?, completed_at=? WHERE id=? AND pharmacy_id=?",
+                  (completion_note, now(), task_id, ph))
+    audit_pharmacy(c, u, "task_complete", {"task_id": task_id, "note": completion_note})
+    return {"status": "completed"}
+
+def list_customers_operational(c, u):
+    """Séparation des données administratives (caissier) vs cliniques (pharmacien/titulaire)."""
+    need_pharmacy(c, u, "customers")
+    ph = u["pharmacy_id"]
+    is_clinical = u.get("role") in ("owner", "pharmacist")
+    with DB_LOCK:
+        rows = [dict(r) for r in c.execute("SELECT * FROM customers WHERE pharmacy_id=? ORDER BY name", (ph,)).fetchall()]
+        if not is_clinical:
+            for r in rows:
+                r.pop("allergies", None)  # Confidentialité clinique pour caissiers
+        return rows
+
+def intake_prescription(c, u, customer_id, doctor, drug_id, posology, refills_total, expiry_date):
+    """Permet à un employé (ou caissier) d'enregistrer et transmettre une ordonnance au pharmacien pour validation."""
+    need_pharmacy(c, u, "prescription_intake")
+    ph = u["pharmacy_id"]
+    status = "active" if u.get("role") in ("owner", "pharmacist") else "pending_validation"
+    with DB_LOCK:
+        if not c.execute("SELECT 1 FROM customers WHERE id=? AND pharmacy_id=?", (customer_id, ph)).fetchone():
+            raise Denied("Patient introuvable dans votre organisation.")
+        if not c.execute("SELECT 1 FROM drugs WHERE id=? AND pharmacy_id=?", (drug_id, ph)).fetchone():
+            raise Denied("Médicament introuvable dans votre organisation.")
+        pid = c.execute("""
+            INSERT INTO prescriptions(pharmacy_id, customer_id, doctor, drug_id, posology, refills_total, refills_left, expiry_date, status, ts)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+        """, (ph, customer_id, doctor, drug_id, posology, refills_total, refills_total, expiry_date, status, now())).lastrowid
+        if status == "pending_validation":
+            _notify_pharmacy(c, ph, "pharmacist", "Ordonnance à valider",
+                             f"Ordonnance #{pid} saisie par {u['username']} en attente de validation clinique.", "info")
+    audit_pharmacy(c, u, "prescription_intake", {"prescription_id": pid, "status": status})
+    return {"prescription_id": pid, "status": status}
+
+def validate_prescription(c, u, prescription_id, decision="active"):
+    need_pharmacy(c, u, "clinical_validate")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        p = c.execute("SELECT id FROM prescriptions WHERE id=? AND pharmacy_id=?", (prescription_id, ph)).fetchone()
+        if not p:
+            raise Denied("Ordonnance introuvable.")
+        c.execute("UPDATE prescriptions SET status=? WHERE id=? AND pharmacy_id=?", (decision, prescription_id, ph))
+    audit_pharmacy(c, u, "prescription_validate", {"prescription_id": prescription_id, "status": decision})
+    return {"status": decision}
+
+def list_custom_roles(c, u):
+    need_pharmacy(c, u, "pharmacy_all")
+    with DB_LOCK:
+        return [dict(r) for r in c.execute("SELECT * FROM custom_roles WHERE pharmacy_id=? ORDER BY id", (u["pharmacy_id"],)).fetchall()]
+
+def create_custom_role(c, u, name, permissions_list):
+    need_pharmacy(c, u, "pharmacy_all")
+    ph = u["pharmacy_id"]
+    with DB_LOCK:
+        try:
+            rid = c.execute("INSERT INTO custom_roles(pharmacy_id, name, permissions_json) VALUES(?,?,?)",
+                            (ph, name, json.dumps(list(permissions_list)))).lastrowid
+        except Exception:
+            raise Conflict("Un rôle personnalisé porte déjà ce nom.")
+    audit_pharmacy(c, u, "custom_role_create", {"role_id": rid, "name": name})
+    return rid
+

@@ -23,24 +23,28 @@ PLATFORM_PERMS = {
 PHARMACY_PERMS = {
     "owner": {"pharmacy_all"},
     "pharmacist": {
-        "sell", "stock_view", "receive", "customers", "prescriptions",
-        "clinical_validate", "notifs", "own_sales", "return_approve"
+        "sell", "stock_view", "receive", "count", "customers", "prescriptions",
+        "prescription_intake", "clinical_validate", "notifs", "own_sales",
+        "return_approve", "tasks", "requests", "block"
     },
     "branch_manager": {
         "sell", "stock_view", "receive", "count", "cash_count", "customers",
-        "prescriptions", "own_sales", "branch_reports", "users_view", "expenses"
+        "prescriptions", "prescription_intake", "own_sales", "branch_reports",
+        "users_view", "expenses", "tasks", "requests", "approve_requests", "notifs", "block"
     },
     "cashier": {
-        "sell", "stock_view", "own_sales", "return_request", "cash_count"
+        "sell", "stock_view", "own_sales", "return_request", "cash_count",
+        "customers", "prescription_intake", "receive", "count", "tasks", "requests", "notifs"
     },
     "stock": {
-        "stock_view", "receive", "count", "suppliers_view", "purchase_orders"
+        "stock_view", "receive", "count", "suppliers_view", "purchase_orders",
+        "tasks", "requests", "notifs", "block"
     },
     "accountant": {
-        "finance_view", "expenses", "cash_count", "exports", "suppliers_view", "reports"
+        "finance_view", "expenses", "cash_count", "exports", "suppliers_view", "reports", "notifs"
     },
     "auditor": {
-        "audit_view", "finance_view", "stock_view", "reports", "exports"
+        "audit_view", "finance_view", "stock_view", "reports", "exports", "notifs"
     }
 }
 

@@ -135,3 +135,19 @@ def seed_enterprise_data(c):
             rid = rep["id"] if rep else None
             c.execute("INSERT INTO crm_prospects(sales_rep_id, pharmacy_name, contact_name, phone, city, stage, created_at) VALUES(?, 'Pharmacie du Wouri', 'Dr. Nguema', '+237 691 22 33 44', 'Douala', 'demo_completed', ?)", (rid, now()))
             c.execute("INSERT INTO crm_prospects(sales_rep_id, pharmacy_name, contact_name, phone, city, stage, created_at) VALUES(?, 'Pharmacie des Montagnes', 'Dr. Fotso', '+237 675 44 55 66', 'Bafoussam', 'negotiation', ?)", (rid, now()))
+
+        # Tâches opérationnelles & session caisse démo pour caissier1 (Pharmacie A)
+        if not c.execute("SELECT id FROM employee_tasks WHERE pharmacy_id=?", (ph_a_id,)).fetchone():
+            caissier1_row = c.execute("SELECT id FROM users WHERE username='caissier1'").fetchone()
+            owner_row = c.execute("SELECT id FROM users WHERE username='titulaire'").fetchone()
+            if caissier1_row and owner_row:
+                cid = caissier1_row["id"]
+                oid = owner_row["id"]
+                c.execute("INSERT INTO employee_tasks(pharmacy_id, branch_id, assigned_to, assigned_by, title, instructions, priority, status, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                          (ph_a_id, b_a1, cid, oid, "Vérifier les produits proches de la péremption", "Contrôler les rayons et confirmer les quantités physiques.", "high", "pending", now()))
+                c.execute("INSERT INTO employee_tasks(pharmacy_id, branch_id, assigned_to, assigned_by, title, instructions, priority, status, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                          (ph_a_id, b_a1, cid, oid, "Réceptionner une livraison fournisseur", "Livraison Laborex attendue ce matin, vérifier les numéros de lot.", "normal", "pending", now()))
+                c.execute("INSERT INTO employee_tasks(pharmacy_id, branch_id, assigned_to, assigned_by, title, instructions, priority, status, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                          (ph_a_id, b_a1, cid, oid, "Signaler les ruptures de stock", "Faire l'inventaire rapide des produits à stock critique.", "normal", "pending", now()))
+                c.execute("INSERT INTO cash_sessions(pharmacy_id, branch_id, user_id, opening_balance, status, opened_at) VALUES(?,?,?, 50000, 'open', ?)",
+                          (ph_a_id, b_a1, cid, now()))

@@ -460,6 +460,99 @@ CREATE TABLE IF NOT EXISTS audit(
   ts TEXT
 );
 
+-- ============================================================================
+-- 4. WORKFLOWS OPÉRATIONNELS EMPLOYÉS, APPROBATIONS, TÂCHES & CAISSES
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS cash_sessions(
+  id INTEGER PRIMARY KEY,
+  pharmacy_id INT NOT NULL,
+  branch_id INT DEFAULT NULL,
+  user_id INT NOT NULL,
+  opening_balance INT DEFAULT 0,
+  counted_cash INT DEFAULT 0,
+  expected_cash INT DEFAULT 0,
+  diff_cash INT DEFAULT 0,
+  total_om INT DEFAULT 0,
+  total_card INT DEFAULT 0,
+  status TEXT DEFAULT 'open',
+  comments TEXT DEFAULT '',
+  opened_at TEXT,
+  closed_at TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS approval_requests(
+  id INTEGER PRIMARY KEY,
+  pharmacy_id INT NOT NULL,
+  branch_id INT DEFAULT NULL,
+  user_id INT NOT NULL,
+  request_type TEXT NOT NULL,
+  target_id INT DEFAULT NULL,
+  payload_json TEXT DEFAULT '{}',
+  reason TEXT DEFAULT '',
+  status TEXT DEFAULT 'pending',
+  reviewed_by INT DEFAULT NULL,
+  review_note TEXT DEFAULT '',
+  created_at TEXT,
+  reviewed_at TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS inventory_counts(
+  id INTEGER PRIMARY KEY,
+  pharmacy_id INT NOT NULL,
+  branch_id INT DEFAULT NULL,
+  user_id INT NOT NULL,
+  drug_id INT NOT NULL,
+  lot_id INT NOT NULL,
+  system_qty INT NOT NULL,
+  counted_qty INT NOT NULL,
+  discrepancy INT NOT NULL,
+  note TEXT DEFAULT '',
+  status TEXT DEFAULT 'pending_review',
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS employee_tasks(
+  id INTEGER PRIMARY KEY,
+  pharmacy_id INT NOT NULL,
+  branch_id INT DEFAULT NULL,
+  assigned_to INT NOT NULL,
+  assigned_by INT NOT NULL,
+  title TEXT NOT NULL,
+  instructions TEXT DEFAULT '',
+  priority TEXT DEFAULT 'normal',
+  due_date TEXT DEFAULT '',
+  status TEXT DEFAULT 'pending',
+  completion_note TEXT DEFAULT '',
+  created_at TEXT,
+  completed_at TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS goods_receipts(
+  id INTEGER PRIMARY KEY,
+  pharmacy_id INT NOT NULL,
+  branch_id INT DEFAULT NULL,
+  user_id INT NOT NULL,
+  supplier_id INT DEFAULT NULL,
+  supplier_name TEXT DEFAULT '',
+  bl_number TEXT DEFAULT '',
+  items_json TEXT DEFAULT '[]',
+  notes TEXT DEFAULT '',
+  status TEXT DEFAULT 'accepted',
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS operational_notifications(
+  id INTEGER PRIMARY KEY,
+  pharmacy_id INT NOT NULL,
+  target_role TEXT DEFAULT 'all',
+  target_user_id INT DEFAULT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  category TEXT DEFAULT 'info',
+  is_read INT DEFAULT 0,
+  created_at TEXT
+);
+
 -- Index d'isolation multi-tenant pour hautes performances
 CREATE INDEX IF NOT EXISTS idx_drugs_ph ON drugs(pharmacy_id);
 CREATE INDEX IF NOT EXISTS idx_lots_ph_drug ON lots(pharmacy_id, drug_id);

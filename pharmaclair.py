@@ -536,31 +536,366 @@ HTML_PAGE = """<!DOCTYPE html>
       document.getElementById('btn-mobile-switch').style.display = isOwner ? 'inline-flex' : 'none';
 
       const nav = document.getElementById('sidebar-nav');
-      nav.innerHTML = `
-        <div class="nav-section">PRINCIPAL</div>
-        ${isOwner ? `<button class="nav-btn active" onclick="loadOwnerDashboard()">Tableau de bord</button>` : ''}
-        ${['owner','cashier','pharmacist','branch_manager'].includes(r) ? `<button class="nav-btn" onclick="loadPOS()">Point de vente</button>` : ''}
-        <button class="nav-btn" onclick="loadSalesView()">Ventes et encaissements</button>
-        <div class="nav-section">GESTION PHARMACEUTIQUE</div>
-        <button class="nav-btn" onclick="loadInventoryView()">Stocks et lots FEFO</button>
-        ${['owner','stock','pharmacist','branch_manager'].includes(r) ? `<button class="nav-btn" onclick="loadReceiveView()">Réceptions fournisseurs</button>` : ''}
-        ${['owner','pharmacist','branch_manager'].includes(r) ? `<button class="nav-btn" onclick="loadPatientsView()">Patients et ordonnances</button>` : ''}
-        ${isFin ? `
+      if (isOwner) {
+        nav.innerHTML = `
+          <div class="nav-section">SUPERVISION DIRECTION</div>
+          <button class="nav-btn active" onclick="loadOwnerDashboard()">Tableau de bord</button>
+          <button class="nav-btn" onclick="loadApprovalsModule()">Centre d'approbations</button>
+          <button class="nav-btn" onclick="loadTasksModule()">Tâches équipe</button>
+          <div class="nav-section">OPÉRATIONS OFFICINE</div>
+          <button class="nav-btn" onclick="loadPOS()">Point de vente</button>
+          <button class="nav-btn" onclick="loadSalesView()">Ventes et encaissements</button>
+          <button class="nav-btn" onclick="loadCustomersModule()">Dossiers clients</button>
+          <button class="nav-btn" onclick="loadPatientsView()">Ordonnances</button>
+          <button class="nav-btn" onclick="loadInventoryView()">Stocks et catalogue</button>
+          <button class="nav-btn" onclick="loadExpiringModule()">Péremptions</button>
+          <button class="nav-btn" onclick="loadSupplierReceptionModule()">Réception fournisseur</button>
           <div class="nav-section">GESTION D'ENTREPRISE</div>
           <button class="nav-btn" onclick="loadFinanceView()">Finances & Compte de Résultat</button>
-          <button class="nav-btn" onclick="loadClosingView()">Clôture Z & Dépenses</button>
           <button class="nav-btn" onclick="loadAuditView()">Sécurité & Audit Antifraude</button>
-        ` : ''}
-        ${isOwner ? `
           <div class="nav-section">ADMINISTRATION</div>
           <button class="nav-btn" onclick="loadBranchesView()">Succursales</button>
           <button class="nav-btn" onclick="loadUsersView()">Personnel & Rôles</button>
           <button class="nav-btn" onclick="loadSettingsView()">Paramètres officine</button>
           <button class="nav-btn" onclick="loadSubscriptionView()">Mon Abonnement (SasPay)</button>
-        ` : ''}
+        `;
+        loadOwnerDashboard();
+      } else {
+        nav.innerHTML = `
+          <div class="nav-section">OPÉRATIONS QUOTIDIENNES</div>
+          <button class="nav-btn active" onclick="loadEmployeeWorkspace()">Mon espace de travail</button>
+          ${['cashier','pharmacist','branch_manager'].includes(r) ? `<button class="nav-btn" onclick="loadPOS()">Point de vente</button>` : ''}
+          ${['cashier','pharmacist','branch_manager'].includes(r) ? `<button class="nav-btn" onclick="loadSalesView()">Ventes et encaissements</button>` : ''}
+          ${['cashier','branch_manager','accountant'].includes(r) ? `<button class="nav-btn" onclick="loadMyCashRegister()">Ma caisse</button>` : ''}
+          <div class="nav-section">OPÉRATIONS PHARMACEUTIQUES</div>
+          <button class="nav-btn" onclick="loadCustomersModule()">Dossiers clients</button>
+          <button class="nav-btn" onclick="loadPatientsView()">Ordonnances</button>
+          <button class="nav-btn" onclick="loadInventoryView()">Stocks</button>
+          <button class="nav-btn" onclick="loadExpiringModule()">Péremptions</button>
+          <button class="nav-btn" onclick="loadSupplierReceptionModule()">Réception fournisseur</button>
+          <button class="nav-btn" onclick="loadPhysicalCountModule()">Inventaire physique</button>
+          <div class="nav-section">MON TRAVAIL</div>
+          <button class="nav-btn" onclick="loadTasksModule()">Mes tâches</button>
+          <button class="nav-btn" onclick="loadApprovalsModule()">Mes demandes</button>
+          ${isFin ? `<div class="nav-section">FINANCES</div><button class="nav-btn" onclick="loadFinanceView()">Compte de Résultat</button>` : ''}
+        `;
+        loadEmployeeWorkspace();
+      }
+    }
+
+    async function loadEmployeeWorkspace() {
+      const ws = await api('/api/employee/workspace');
+      document.getElementById('topbar-org-name').innerText = ws.pharmacy_name || 'Officine';
+      const isOpen = !!ws.cash_session;
+      const openTime = isOpen ? (ws.cash_session.opened_at || '').slice(11, 16).replace(':', ' h ') : '';
+
+      document.getElementById('main-content').innerHTML = `
+        <div style="margin-bottom:1.25rem;">
+          <h2 style="font-size:1.5rem; font-weight:800;">Mon espace de travail</h2>
+          <p style="font-size:0.9rem; color:var(--text-muted); margin-top:0.2rem;">${ws.date_display}</p>
+        </div>
+
+        <div style="background:${isOpen ? '#ecfdf5' : '#fef2f2'}; border:1px solid ${isOpen ? '#a7f3d0' : '#fecaca'}; border-radius:12px; padding:0.95rem 1.25rem; margin-bottom:1.5rem; display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="loadMyCashRegister()">
+          <div style="display:flex; align-items:center; gap:0.6rem; font-weight:700; color:${isOpen ? '#065f46' : '#991b1b'};">
+            <span>${isOpen ? '✅ Caisse ouverte' : '🔒 Caisse fermée (Cliquer pour ouvrir)'}</span>
+          </div>
+          <div style="font-size:0.85rem; color:${isOpen ? '#047857' : '#b91c1c'}; font-weight:600;">
+            ${isOpen ? 'Depuis ' + openTime : 'Ouvrir ma session'}
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:1rem; margin-bottom:1.75rem;">
+          <div class="card" style="margin-bottom:0; cursor:pointer; display:flex; align-items:flex-start; gap:1rem;" onclick="loadPOS()">
+            <div style="background:#ecfdf5; color:#059669; padding:0.7rem; border-radius:10px; font-size:1.2rem;">🛒</div>
+            <div><div style="font-weight:700; font-size:1rem;">Nouvelle vente</div><div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.2rem;">Enregistrer et encaisser</div></div>
+          </div>
+
+          <div class="card" style="margin-bottom:0; cursor:pointer; display:flex; align-items:flex-start; gap:1rem;" onclick="loadCustomersModule()">
+            <div style="background:#ecfdf5; color:#059669; padding:0.7rem; border-radius:10px; font-size:1.2rem;">👥</div>
+            <div><div style="font-weight:700; font-size:1rem;">Dossiers clients</div><div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.2rem;">Rechercher ou enregistrer</div></div>
+          </div>
+
+          <div class="card" style="margin-bottom:0; cursor:pointer; display:flex; align-items:flex-start; gap:1rem;" onclick="loadSupplierReceptionModule()">
+            <div style="background:#ecfdf5; color:#059669; padding:0.7rem; border-radius:10px; font-size:1.2rem;">🚚</div>
+            <div><div style="font-weight:700; font-size:1rem;">Réception fournisseur</div><div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.2rem;">Enregistrer une livraison</div></div>
+          </div>
+
+          <div class="card" style="margin-bottom:0; cursor:pointer; display:flex; align-items:flex-start; gap:1rem;" onclick="loadInventoryView()">
+            <div style="background:#ecfdf5; color:#059669; padding:0.7rem; border-radius:10px; font-size:1.2rem;">📦</div>
+            <div><div style="font-weight:700; font-size:1rem;">Stocks</div><div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.2rem;">Vérifier la disponibilité</div></div>
+          </div>
+
+          <div class="card" style="margin-bottom:0; cursor:pointer; display:flex; align-items:flex-start; gap:1rem;" onclick="loadExpiringModule()">
+            <div style="background:#ecfdf5; color:#059669; padding:0.7rem; border-radius:10px; font-size:1.2rem;">📅</div>
+            <div><div style="font-weight:700; font-size:1rem;">Péremptions</div><div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.2rem;">${ws.expiring_count} lot(s) à surveiller</div></div>
+          </div>
+
+          <div class="card" style="margin-bottom:0; cursor:pointer; display:flex; align-items:flex-start; gap:1rem;" onclick="loadPhysicalCountModule()">
+            <div style="background:#ecfdf5; color:#059669; padding:0.7rem; border-radius:10px; font-size:1.2rem;">📋</div>
+            <div><div style="font-weight:700; font-size:1rem;">Inventaire</div><div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.2rem;">Compter et signaler</div></div>
+          </div>
+
+          <div class="card" style="margin-bottom:0; cursor:pointer; display:flex; align-items:flex-start; gap:1rem;" onclick="loadPatientsView()">
+            <div style="background:#ecfdf5; color:#059669; padding:0.7rem; border-radius:10px; font-size:1.2rem;">📄</div>
+            <div><div style="font-weight:700; font-size:1rem;">Ordonnances</div><div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.2rem;">Saisir et transmettre</div></div>
+          </div>
+
+          <div class="card" style="margin-bottom:0; cursor:pointer; display:flex; align-items:flex-start; gap:1rem;" onclick="loadMyCashRegister()">
+            <div style="background:#ecfdf5; color:#059669; padding:0.7rem; border-radius:10px; font-size:1.2rem;">💳</div>
+            <div><div style="font-weight:700; font-size:1rem;">Ma caisse</div><div style="font-size:0.82rem; color:var(--text-muted); margin-top:0.2rem;">Encaissements et clôture</div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Tâches à effectuer</div>
+          <div style="display:flex; flex-direction:column; gap:0.75rem;">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:0.75rem; border-bottom:1px solid var(--border); cursor:pointer;" onclick="loadExpiringModule()">
+              <div><b>Vérifier les produits proches de la péremption</b><br><small style="color:var(--text-muted)">${ws.expiring_count} lot(s) concerné(s)</small></div>
+              <span>›</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:0.75rem; border-bottom:1px solid var(--border); cursor:pointer;" onclick="loadSupplierReceptionModule()">
+              <div><b>Réceptionner une livraison fournisseur</b><br><small style="color:var(--text-muted)">${ws.pending_deliveries_count} commande(s) attendue(s)</small></div>
+              <span>›</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:0.75rem; border-bottom:1px solid var(--border); cursor:pointer;" onclick="loadPhysicalCountModule()">
+              <div><b>Signaler les ruptures de stock</b><br><small style="color:var(--text-muted)">${ws.low_stock_count} référence(s) concernée(s)</small></div>
+              <span>›</span>
+            </div>
+            ${(ws.tasks || []).map(t => `
+              <div style="display:flex; justify-content:space-between; align-items:center; padding:0.75rem; background:#f8fafc; border-radius:8px;">
+                <div><b>${t.title}</b><br><small style="color:var(--text-muted)">${t.instructions}</small></div>
+                <button class="btn btn-primary btn-sm" onclick="completeTask(${t.id})">Terminer</button>
+              </div>
+            `).join('')}
+          </div>
+        </div>
       `;
-      if (isOwner) loadOwnerDashboard();
-      else loadPOS();
+    }
+
+    async function loadMyCashRegister() {
+      const reg = await api('/api/cash_register/me');
+      const s = reg.session;
+      const isOpen = s && s.status === 'open';
+      document.getElementById('main-content').innerHTML = `
+        <div class="card" style="max-width:600px;">
+          <div class="card-title">Ma Caisse Individuelle (${CURRENT_USER.username})</div>
+          ${!isOpen ? `
+            <p style="margin-bottom:1rem; color:var(--text-muted);">Votre caisse est actuellement fermée. Saisissez votre fond de caisse initial pour démarrer.</p>
+            <form onsubmit="openRegister(event)">
+              <label>Fond de caisse d'ouverture (FCFA)</label>
+              <input type="number" id="reg-open-amt" value="50000" required style="margin:0.5rem 0 1rem;">
+              <button type="submit" class="btn btn-primary" style="width:100%;">Ouvrir ma caisse</button>
+            </form>
+          ` : `
+            <div class="kpi-grid">
+              <div class="kpi-card"><div class="kpi-label">Fond Initial</div><div class="kpi-val">${s.opening_balance.toLocaleString()} F</div></div>
+              <div class="kpi-card sec"><div class="kpi-label">Ventes Espèces</div><div class="kpi-val">${reg.cash_sales.toLocaleString()} F</div></div>
+              <div class="kpi-card acc"><div class="kpi-label">Espèces Attendues</div><div class="kpi-val">${reg.expected_cash.toLocaleString()} F</div></div>
+            </div>
+            <form onsubmit="closeRegister(event)">
+              <label>Espèces comptées physiquement (FCFA)</label>
+              <input type="number" id="reg-close-amt" required style="margin:0.4rem 0 0.75rem;">
+              <label>Commentaire de clôture</label>
+              <input type="text" id="reg-close-note" placeholder="RAS" style="margin:0.4rem 0 1rem;">
+              <button type="submit" class="btn btn-danger" style="width:100%;">Clôturer ma caisse</button>
+            </form>
+          `}
+        </div>
+      `;
+    }
+    async function openRegister(e) {
+      e.preventDefault();
+      await api('/api/cash_register/open', 'POST', { opening_balance: parseInt(document.getElementById('reg-open-amt').value) });
+      loadMyCashRegister();
+    }
+    async function closeRegister(e) {
+      e.preventDefault();
+      const res = await api('/api/cash_register/close', 'POST', {
+        counted_cash: parseInt(document.getElementById('reg-close-amt').value),
+        comments: document.getElementById('reg-close-note').value
+      });
+      alert(`Caisse clôturée ! Écart constaté : ${res.diff_cash} FCFA`);
+      loadMyCashRegister();
+    }
+
+    async function loadExpiringModule(days='90') {
+      const lots = await api('/api/lots/expiring?days=' + days);
+      document.getElementById('main-content').innerHTML = `
+        <div class="card">
+          <div class="card-title">
+            <span>Produits Proches de la Péremption</span>
+            <select onchange="loadExpiringModule(this.value)" style="width:auto;">
+              <option value="expired" ${days==='expired'?'selected':''}>Déjà périmés</option>
+              <option value="7" ${days==='7'?'selected':''}>≤ 7 jours</option>
+              <option value="30" ${days==='30'?'selected':''}>≤ 30 jours</option>
+              <option value="90" ${days==='90'?'selected':''}>≤ 90 jours</option>
+              <option value="180" ${days==='180'?'selected':''}>≤ 180 jours</option>
+              <option value="3650" ${days==='3650'?'selected':''}>Tous les lots</option>
+            </select>
+          </div>
+          <table>
+            <thead><tr><th>Médicament</th><th>Lot</th><th>Emplacement</th><th>Expiration</th><th>Jours</th><th>Qté</th><th>Statut</th></tr></thead>
+            <tbody>${lots.map(l => `
+              <tr>
+                <td><b>${l.drug_name}</b></td>
+                <td><code>${l.lot_no}</code></td>
+                <td>${l.storage_location}</td>
+                <td>${l.expiry}</td>
+                <td><span class="badge ${l.days_left<0?'badge-danger':(l.days_left<=30?'badge-warning':'badge-info')}">${l.days_left} j</span></td>
+                <td><b>${l.qty}</b></td>
+                <td>${l.status}</td>
+              </tr>
+            `).join('') || '<tr><td colspan="7" style="text-align:center;">Aucun lot dans cette plage.</td></tr>'}</tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    async function loadSupplierReceptionModule() {
+      const drugs = await api('/drugs');
+      const hist = await api('/api/receive/history');
+      document.getElementById('main-content').innerHTML = `
+        <div class="card" style="max-width:750px;">
+          <div class="card-title">Réception Livraison Fournisseur</div>
+          <form onsubmit="submitDelivery(event)">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:0.75rem;">
+              <div><label>Fournisseur</label><input id="del-sup" value="Laborex Cameroun" required></div>
+              <div><label>N° Bon de Livraison (BL)</label><input id="del-bl" placeholder="BL-2026-..." required></div>
+            </div>
+            <div style="display:grid; grid-template-columns:2fr 1fr 1fr 1fr; gap:0.5rem; margin-bottom:1rem;">
+              <div><label>Médicament</label><select id="del-drug">${drugs.map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}</select></div>
+              <div><label>N° Lot</label><input id="del-lot" required></div>
+              <div><label>Exp (AAAA-MM)</label><input id="del-exp" placeholder="2027-12" required></div>
+              <div><label>Qté</label><input type="number" id="del-qty" min="1" required></div>
+            </div>
+            <button type="submit" class="btn btn-primary" style="width:100%;">Confirmer la Réception & Mettre en Stock</button>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-title">Historique des Réceptions</div>
+          <table><thead><tr><th>Date</th><th>BL</th><th>Fournisseur</th><th>Réceptionné par</th><th>Statut</th></tr></thead><tbody>${hist.map(h=>`<tr><td>${h.created_at}</td><td><b>${h.bl_number}</b></td><td>${h.supplier_name}</td><td>${h.receiver_name}</td><td><span class="badge badge-success">${h.status}</span></td></tr>`).join('')}</tbody></table>
+        </div>
+      `;
+    }
+    async function submitDelivery(e) {
+      e.preventDefault();
+      await api('/api/receive/delivery', 'POST', {
+        supplier_name: document.getElementById('del-sup').value,
+        bl_number: document.getElementById('del-bl').value,
+        items: [{
+          drug_id: parseInt(document.getElementById('del-drug').value),
+          lot_no: document.getElementById('del-lot').value,
+          expiry: document.getElementById('del-exp').value,
+          qty: parseInt(document.getElementById('del-qty').value),
+          condition: 'ok'
+        }]
+      });
+      alert('Livraison enregistrée et stock mis à jour !');
+      loadSupplierReceptionModule();
+    }
+
+    async function loadPhysicalCountModule() {
+      const lots = await api('/api/lots/expiring?days=3650');
+      document.getElementById('main-content').innerHTML = `
+        <div class="card">
+          <div class="card-title">Inventaire Physique & Signalement d'Écarts</div>
+          <table>
+            <thead><tr><th>Médicament</th><th>Lot</th><th>Stock Système</th><th>Quantité Comptée</th><th>Note</th><th>Action</th></tr></thead>
+            <tbody>${lots.map(l=>`
+              <tr>
+                <td><b>${l.drug_name}</b></td>
+                <td><code>${l.lot_no}</code></td>
+                <td>${l.qty}</td>
+                <td><input type="number" id="cnt-${l.id}" value="${l.qty}" style="width:90px;"></td>
+                <td><input type="text" id="note-${l.id}" placeholder="Motif si écart..."></td>
+                <td><button class="btn btn-primary btn-sm" onclick="submitCount(${l.id})">Soumettre</button></td>
+              </tr>
+            `).join('')}</tbody>
+          </table>
+        </div>
+      `;
+    }
+    async function submitCount(lotId) {
+      const qty = parseInt(document.getElementById('cnt-' + lotId).value);
+      const note = document.getElementById('note-' + lotId).value;
+      const res = await api('/api/inventory/count', 'POST', { lot_id: lotId, counted_qty: qty, note });
+      if (res.discrepancy === 0) alert('Stock confirmé exact !');
+      else alert(`Écart de ${res.discrepancy} unité(s) signalé au titulaire pour approbation.`);
+      loadPhysicalCountModule();
+    }
+
+    async function loadCustomersModule() {
+      const custs = await api('/api/customers');
+      document.getElementById('main-content').innerHTML = `
+        <div class="card" style="max-width:650px;">
+          <div class="card-title">Nouveau Client</div>
+          <form onsubmit="createCust(event)" style="display:grid; grid-template-columns:1fr 1fr auto; gap:0.5rem;">
+            <input id="c-name" placeholder="Nom complet" required>
+            <input id="c-phone" placeholder="Téléphone (+237...)" required>
+            <button type="submit" class="btn btn-primary">Enregistrer</button>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-title">Répertoire Clients</div>
+          <table><thead><tr><th>Nom</th><th>Téléphone</th><th>Assurance</th><th>Date</th></tr></thead><tbody>${custs.map(c=>`<tr><td><b>${c.name}</b></td><td>${c.phone}</td><td>${c.insurance_info||'-'}</td><td>${c.ts}</td></tr>`).join('')}</tbody></table>
+        </div>
+      `;
+    }
+    async function createCust(e) {
+      e.preventDefault();
+      await api('/api/customers/create', 'POST', { name: document.getElementById('c-name').value, phone: document.getElementById('c-phone').value });
+      loadCustomersModule();
+    }
+
+    async function loadTasksModule() {
+      const tasks = await api('/api/tasks');
+      document.getElementById('main-content').innerHTML = `
+        <div class="card">
+          <div class="card-title">Tâches Opérationnelles</div>
+          <table><thead><tr><th>Tâche</th><th>Assignée à</th><th>Priorité</th><th>Statut</th><th>Action</th></tr></thead>
+          <tbody>${tasks.map(t=>`
+            <tr>
+              <td><b>${t.title}</b><br><small>${t.instructions}</small></td>
+              <td>${t.assignee_name || 'Équipe'}</td>
+              <td><span class="badge badge-info">${t.priority}</span></td>
+              <td><span class="badge ${t.status==='completed'?'badge-success':'badge-warning'}">${t.status}</span></td>
+              <td>${t.status==='pending' ? `<button class="btn btn-primary btn-sm" onclick="completeTask(${t.id})">Terminer</button>` : '✓'}</td>
+            </tr>
+          `).join('')}</tbody></table>
+        </div>
+      `;
+    }
+    async function completeTask(id) {
+      await api('/api/tasks/complete', 'POST', { task_id: id, completion_note: 'Effectué' });
+      alert('Tâche marquée terminée.');
+      if (CURRENT_USER.role === 'owner') loadTasksModule(); else loadEmployeeWorkspace();
+    }
+
+    async function loadApprovalsModule() {
+      const reqs = await api('/api/approvals');
+      const isApprover = ['owner', 'branch_manager'].includes(CURRENT_USER.role);
+      document.getElementById('main-content').innerHTML = `
+        <div class="card">
+          <div class="card-title">Centre d'Approbations & Demandes d'Ajustement</div>
+          <table><thead><tr><th>Type</th><th>Employé</th><th>Motif</th><th>Statut</th><th>Action</th></tr></thead>
+          <tbody>${reqs.map(r=>`
+            <tr>
+              <td><b>${r.request_type}</b></td>
+              <td>${r.requester_name}</td>
+              <td>${r.reason}</td>
+              <td><span class="badge ${r.status==='approved'?'badge-success':(r.status==='rejected'?'badge-danger':'badge-warning')}">${r.status}</span></td>
+              <td>${isApprover && r.status==='pending' ? `
+                <button class="btn btn-primary btn-sm" onclick="reviewReq(${r.id}, 'approved')">Approuver</button>
+                <button class="btn btn-danger btn-sm" onclick="reviewReq(${r.id}, 'rejected')">Rejeter</button>
+              ` : (r.review_note || '-')}</td>
+            </tr>
+          `).join('') || '<tr><td colspan="5" style="text-align:center;">Aucune demande en attente.</td></tr>'}</tbody></table>
+        </div>
+      `;
+    }
+    async function reviewReq(id, dec) {
+      await api('/api/approvals/review', 'POST', { request_id: id, decision: dec });
+      loadApprovalsModule();
     }
 
     function toggleMobileOwner() {
@@ -844,6 +1179,44 @@ def make_handler(c):
                     return self._send(200, platform_saas.list_support_tickets(c, u))
 
                 # --- ROUTES OPÉRATIONS OFFICINES ISOLÉES ---
+                if method == "GET" and path == "/api/employee/workspace":
+                    return self._send(200, pharmacy_ops.employee_workspace_summary(c, u))
+                if method == "GET" and path == "/api/cash_register/me":
+                    return self._send(200, pharmacy_ops.get_my_cash_register(c, u))
+                if method == "POST" and path == "/api/cash_register/open":
+                    return self._send(200, {"session_id": pharmacy_ops.open_cash_register(c, u, int(body.get("opening_balance", 0)))})
+                if method == "POST" and path == "/api/cash_register/close":
+                    return self._send(200, pharmacy_ops.close_cash_register(c, u, int(body["counted_cash"]), body.get("comments", "")))
+                if method == "GET" and path == "/api/lots/expiring":
+                    return self._send(200, pharmacy_ops.list_expiring_lots(c, u, qs.get("days", ["90"])[0]))
+                if method == "POST" and path == "/api/receive/delivery":
+                    return self._send(200, pharmacy_ops.receive_supplier_delivery(c, u, body))
+                if method == "GET" and path == "/api/receive/history":
+                    return self._send(200, pharmacy_ops.list_goods_receipts(c, u))
+                if method == "POST" and path == "/api/inventory/count":
+                    return self._send(200, pharmacy_ops.submit_inventory_count(c, u, int(body["lot_id"]), int(body["counted_qty"]), body.get("note", "")))
+                if method == "GET" and path == "/api/approvals":
+                    return self._send(200, pharmacy_ops.list_approval_requests(c, u))
+                if method == "POST" and path == "/api/approvals/review":
+                    return self._send(200, pharmacy_ops.review_approval_request(c, u, int(body["request_id"]), body["decision"], body.get("review_note", "")))
+                if method == "GET" and path == "/api/tasks":
+                    return self._send(200, pharmacy_ops.list_tasks(c, u))
+                if method == "POST" and path == "/api/tasks/create":
+                    return self._send(200, {"task_id": pharmacy_ops.create_employee_task(c, u, int(body["assigned_to"]), body["title"], body.get("instructions", ""), body.get("priority", "normal"))})
+                if method == "POST" and path == "/api/tasks/complete":
+                    return self._send(200, pharmacy_ops.complete_employee_task(c, u, int(body["task_id"]), body.get("completion_note", "")))
+                if method == "GET" and path == "/api/customers":
+                    return self._send(200, pharmacy_ops.list_customers_operational(c, u))
+                if method == "POST" and path == "/api/customers/create":
+                    return self._send(200, {"customer_id": pharmacy_ops.create_customer(c, u, body["name"], body["phone"], body.get("allergies", ""), body.get("insurance_info", ""))})
+                if method == "POST" and path == "/api/prescriptions/intake":
+                    return self._send(200, pharmacy_ops.intake_prescription(c, u, int(body["customer_id"]), body["doctor"], int(body["drug_id"]), body["posology"], int(body["refills_total"]), body["expiry_date"]))
+                if method == "POST" and path == "/api/prescriptions/validate":
+                    return self._send(200, pharmacy_ops.validate_prescription(c, u, int(body["prescription_id"]), body.get("decision", "active")))
+                if method == "GET" and path == "/api/roles/custom":
+                    return self._send(200, pharmacy_ops.list_custom_roles(c, u))
+                if method == "POST" and path == "/api/roles/custom/create":
+                    return self._send(200, {"role_id": pharmacy_ops.create_custom_role(c, u, body["name"], body["permissions"])})
                 if method == "GET" and path == "/owner/stats":
                     return self._send(200, pharmacy_ops.owner_dashboard_stats(c, u))
                 if method == "GET" and path == "/api/finance/pnl":
