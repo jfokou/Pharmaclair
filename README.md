@@ -1,25 +1,28 @@
 # ℞ PharmaClair - Système de Gestion Officinale & Direction
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/jfokou/Pharmaclair)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new)
 
 **PharmaClair** est un système officinal complet, moderne et léger, développé **exclusivement avec la bibliothèque standard Python** (zéro dépendance externe). Il embarque un serveur HTTP multi-threadé, une base de données SQLite transactionnelle et une interface web réactive (Point de Vente, Direction, Clients & Ordonnances, Rappels SMS, Stocks, Pointage du Personnel, Vidéosurveillance).
 
 ---
 
-## 🌐 Déploiement Cloud 100% Gratuit sur le Web
+## 🌐 Déploiement Cloud Web 24h/24 avec Railway (Recommandé)
 
-Vous pouvez héberger **PharmaClair** gratuitement 24h/24 sur le Cloud afin qu'il soit accessible depuis n'importe quel ordinateur, tablette ou smartphone sans dépendre de votre machine locale.
+Vous pouvez héberger **PharmaClair** gratuitement et en continu sur le Cloud avec **Railway** afin qu'il soit accessible depuis n'importe quel ordinateur, tablette ou smartphone sans dépendre de votre machine locale.
 
-### Option 1 : Déploiement en 1 Clic sur Render (Recommandé)
-1. Cliquez sur le bouton ci-dessus ou sur ce lien : **[Déployer sur Render](https://render.com/deploy?repo=https://github.com/jfokou/Pharmaclair)**
-2. Connectez-vous avec votre compte GitHub.
-3. Donnez un nom à votre application (ex: `pharmaclair-officine`).
-4. Cliquez sur **Apply** / **Create Web Service**.
-5. Votre application sera déployée et disposera d'une URL publique permanente : `https://pharmaclair-officine.onrender.com` !
+### Étapes de déploiement sur Railway :
+1. Connectez-vous sur **[Railway.com](https://railway.com)** avec votre compte GitHub.
+2. Cliquez sur **New Project** (Nouveau projet) ➔ **Deploy from GitHub repo**.
+3. Sélectionnez le dépôt **`jfokou/Pharmaclair`**. Railway détecte automatiquement la configuration et lance le déploiement.
+4. Une fois le projet créé, cliquez sur la boîte du service **Pharmaclair** ➔ onglet **Settings**.
+5. Dans la section **Public Networking**, cliquez sur **`⚡ Generate Domain`** (entrez le port `8000` si demandé).
+6. Votre application est immédiatement en ligne avec son adresse publique permanente (ex: `https://pharmaclair-production.up.railway.app`) !
 
-### Option 2 : Déploiement sur Railway ou Koyeb
-- **Railway** : Nouveau projet ➔ *Deploy from GitHub repo* ➔ Sélectionner `jfokou/Pharmaclair`. Railway détecte automatiquement le `Procfile`.
-- **Koyeb** : Créer un service ➔ *GitHub* ➔ Sélectionner `jfokou/Pharmaclair` ➔ Détection automatique du `Dockerfile`.
+---
+
+### Alternative : Autres hébergeurs Cloud
+- **Koyeb** : *Create Service* ➔ *GitHub* ➔ Sélectionner `jfokou/Pharmaclair` ➔ Détection automatique du `Dockerfile`.
+- **Render** : *New Web Service* ➔ Sélectionner `jfokou/Pharmaclair` ➔ Build Command vide, Start Command `python pharmaclair.py`.
 
 ---
 
